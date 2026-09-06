@@ -143,7 +143,7 @@ Primary language: Kotlin. UI: Jetpack Compose. Rendering abstraction: `RendererB
 
 > **[RATIFIED — Ref AR-17.1]** The "architecture must permit a future VulkanBackend" requirement is **scoped down to a boundary-discipline requirement, not an active engineering deliverable for v1**. Concretely: `renderer/core` business logic (compositor, layer traversal, parameter resolution) must call `RendererBackend` only — never `GLES20.*`/`GLES30.*` directly — enforced by the module dependency graph (§116.1). No Vulkan-specific concepts (explicit command buffers, memory barriers, descriptor sets, render passes) are designed or built into the v1 `RendererBackend` interface. This "leaves the door open" without pre-paying for a second backend that has not yet been validated by real implementation. Building an actual `VulkanBackend` is not part of any phase in §128–§148 and requires a separate future ADR (ADR-011 remains reserved for this).
 
-> **[RATIFIED — Ref AR-58 (technology confirmation, unresolved)]** Dependency injection framework, minimum supported Android API level, and WASM runtime library selection are **not resolved by this document** — see Appendix B, items U-1, U-2, U-3.
+> **[NOTED — not a Review finding; forward-reference to Appendix B]** Dependency injection framework, minimum supported Android API level, and WASM runtime library selection are **not resolved by this document** — see Appendix B, items U-1, U-2, U-3.
 
 ### 7. MEDIA INFRASTRUCTURE
 
@@ -327,7 +327,7 @@ Changing image position MUST NOT invalidate analysis. Changing effect blur MUST 
 >
 > **Concurrency:** `AudioAnalysisCache` is **immutable-once-written and append-only**, randomly readable by timestamp, structured so the render thread can read it **lock-free** (e.g. a versioned array/ring buffer behind an atomic "highest-complete-index" marker) and **never blocks** waiting for analysis to catch up during preview. If analysis for time T is not yet available, the renderer uses the nearest available cached sample and flags the frame in Diagnostics (§98) as "analysis pending" — it never stalls the render thread. During export, the §17.1 precondition guarantees this situation cannot occur.
 >
-> **Storage scope:** the cache is **content-addressed**, keyed by `(assetHash, analysisConfigHash)`, and stored **external to the portable project file** in an app-managed cache directory — never embedded in the JSON project (§10, §81). It is disposable and regenerable: if missing (fresh install, cleared cache, moved project), it is silently regenerated on first use following the §17.1 progressive/priority order. Project backup/export/share bundles (§111) **never** include analysis cache payloads.
+> **Storage scope:** the cache is **content-addressed**, keyed by `(assetHash, analysisConfigHash)` — where `assetHash` is the asset's content hash as recorded on its Asset Registry entry (§82's `hash` field), obtained by resolving the project's `audio.assetRef` (§10) through the Asset Registry, never the raw `assetRef` value itself (see §27.2 for the identical rule applied to the Resolved Modulation Cache) — and stored **external to the portable project file** in an app-managed cache directory — never embedded in the JSON project (§10, §81). It is disposable and regenerable: if missing (fresh install, cleared cache, moved project), it is silently regenerated on first use following the §17.1 progressive/priority order. Project backup/export/share bundles (§111) **never** include analysis cache payloads.
 
 ### 19. AUDIO NORMALIZATION
 
@@ -410,7 +410,7 @@ Recommended: `Base Value → Keyframe Modifier → Audio Modifier → Noise/Rand
 >
 > **Cache key, precisely:** `(parameterId, mappingConfigurationHash, audioAnalysisCacheKey, analyzerSourceVersionKey?)`, where:
 > - `mappingConfigurationHash` is a hash of the parameter's full, ordered `ReactiveMapping[]` list — including each mapping's `source` reference, not just its tuning fields (gain/attack/release/curve/etc.).
-> - `audioAnalysisCacheKey` is exactly the `(assetHash, analysisConfigHash)` key the underlying `AudioAnalysisCache` is itself keyed by (§18.1) — never omitted, since without it a change of audio asset or analysis settings (FFT size, §106) would not invalidate this downstream cache, silently serving the old audio's trajectory against new audio, in direct violation of §18's rule that changing the audio file or analysis settings "MUST invalidate appropriate analysis data."
+> - `audioAnalysisCacheKey` is exactly the `(assetHash, analysisConfigHash)` key the underlying `AudioAnalysisCache` is itself keyed by (§18.1) — never omitted, since without it a change of audio asset or analysis settings (FFT size, §106) would not invalidate this downstream cache, silently serving the old audio's trajectory against new audio, in direct violation of §18's rule that changing the audio file or analysis settings "MUST invalidate appropriate analysis data." **`assetHash` is obtained by resolving `audio.assetRef` (§10) through the Asset Registry (§82) to that asset's `hash` field — `assetRef` is only a project-local identifier, never itself a content hash, and must never be used directly as (or in place of) `assetHash` in this key.**
 > - `analyzerSourceVersionKey` is `(pluginId, pluginVersion)` (or a content hash of the plugin's WASM module) for any mapping whose `source` resolves to a Tier-2 Analyzer Plugin output (§55/§56.1) — omitted only when every mapping's source is a built-in feature. Without this, updating an Analyzer Plugin (which can change its algorithm/output for identical audio) would not invalidate cache entries computed under the plugin's previous version.
 >
 > **Invalidation rule:** the cache entry is invalidated and recomputed whenever **any** component of this key changes — a mapping is edited or reordered, the audio asset is swapped/re-imported, analysis settings change, or a contributing Analyzer Plugin is updated. It is invalidated by **none** of: scrubbing, seeking, playback, dropped frames, keyframe edits, or trim-handle dragging (§9.1 defines why trim is excluded). No cache entry may remain valid when any of its semantic inputs above has changed, without exception.
@@ -672,7 +672,7 @@ DO NOT use arbitrary runtime C#/Kotlin code loading as the default plugin mechan
 
 ### 61. PLUGIN PERMISSIONS
 
-Plugins declare permissions. Examples: `GPU_RENDER, AUDIO_ANALYSIS, ASSET_READ, PROJECT_READ, PROJECT_WRITE, ~~NETWORK~~, FILE_EXPORT` (NETWORK struck — removed entirely, see §61.1). A plugin should receive only the capabilities it needs.
+Plugins declare permissions. Examples: `GPU_RENDER, AUDIO_ANALYSIS, ASSET_READ, PROJECT_READ, PROJECT_WRITE, FILE_EXPORT`. **`NETWORK` has been removed from this list entirely — it is not a valid permission for any plugin type; see §61.1.** A plugin should receive only the capabilities it needs.
 
 #### 61.1 NETWORK Removed From the v1 Permission Set
 
@@ -771,7 +771,7 @@ If a project contains a removed plugin: project must NOT corrupt. Instead: `[Mis
 
 Repository must contain `VisualizerPluginSDK/`: `API/, Examples/, Templates/, Documentation/, TestHarness/, CLI/`. Templates: `BasicEffect, AudioReactiveEffect, Visualizer, Generator, Analyzer, CustomLayer, Importer, Exporter`.
 
-> **[RATIFIED — Ref AR-1.2]** The SDK's `Analyzer`, `CustomLayer` (where CPU logic is needed), and CPU-logic `Generator` templates target **Tier 2 (WASM)** per §60.1 from day one — they are not stubs awaiting a future WASM decision. `BasicEffect`/`AudioReactiveEffect`/`Visualizer` templates target **Tier 1 (Declarative)**.
+> **[RATIFIED — Ref AR-1.2]** The SDK's `Analyzer`, `CustomLayer` (where CPU logic is needed), and CPU-logic `Generator` templates target **Tier 2 (WASM)** per §60.1 from day one — they are not stubs awaiting a future WASM *tier* decision, which is ratified and final. **They are, however, stubs awaiting the WASM host ABI itself: no Tier-2 template in this SDK is ready to implement against until Appendix B item U-19 is resolved (§57, §56.1)** — the concrete, versioned, capability-typed function table these templates call does not yet exist, and must not be invented ad hoc while filling in a template. `BasicEffect`/`AudioReactiveEffect`/`Visualizer` templates target **Tier 1 (Declarative)** and are unaffected by U-19.
 
 ### 75. PLUGIN CLI
 
@@ -1003,11 +1003,11 @@ Separate: UI, Audio, Analysis, Decode, Render, Export. No arbitrary mutable shar
 
 ### 102. STATE MANAGEMENT
 
-Unidirectional: `UI Action → ViewModel/Controller → Domain Command → Project State → Renderer State → GPU`.
+Unidirectional: `UI Action → ViewModel/Controller → Domain Command → ProjectState → RendererState → GPU`.
 
 #### 102.1 Renderer State Is a Derived Cache, Never the Source of Truth
 
-> **[RATIFIED — Ref AR-4.2]** "Renderer State" in the diagram above is precisely defined: it is a **derived `RenderGraph`** (§8, §85.1) — a compiled, GPU-resource-bound representation incrementally updated via the Command diff/patch protocol (§85.1). `ProjectState` is always the sole durable source of truth; `RenderGraph` can always be fully regenerated from it (this is also why context loss, §8, is safely recoverable). Renderer State is never rebuilt wholesale on every frame (that would be a severe, needless performance cost) and never diverges from what `ProjectState` would produce, by construction of the diff protocol.
+> **[RATIFIED — Ref AR-4.2]** `RendererState` in the diagram above is precisely defined: it is a **derived `RenderGraph`** (§8, §85.1) — a compiled, GPU-resource-bound representation incrementally updated via the Command diff/patch protocol (§85.1). `ProjectState` is always the sole durable source of truth; `RenderGraph` can always be fully regenerated from it (this is also why context loss, §8, is safely recoverable). `RendererState` is never rebuilt wholesale on every frame (that would be a severe, needless performance cost) and never diverges from what `ProjectState` would produce, by construction of the diff protocol.
 
 ---
 
@@ -1184,6 +1184,8 @@ Architecture only. Do not build the complete UI. Produce: architecture, module g
 Audio: import, decode, playback, waveform, trim, analysis, cache.
 
 > Per §20.O of the Review: also establishes `core/model`, the module dependency-boundary CI check (§116.1), DI setup, and the Coordinate/Color/Clock decisions (§13.1, §90.1, §14.1) as testable primitives **before any UI is built**.
+>
+> **Blocked by:** U-1 (DI framework selection), U-2 (minimum Android API level) — hard blockers, per §128, must be resolved or explicitly deferred before this phase begins. U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist.
 
 ### 130. PHASE 2
 
@@ -1196,6 +1198,8 @@ Basic compositor: images, layers, transforms, opacity, blend modes, preview.
 Reactive engine: FFT bands, RMS, peak, beat, mapping, smoothing, attack/release, curves.
 
 > Includes the `ParameterResolver` (§22.1), Resolved Modulation Cache (§27.2), source deduplication (§22.2), and pure-function envelope/peak-gravity implementations (§9.1) — **validated against the layer-isolation golden test (§78/§80.1) as this phase's exit criterion**, not merely "features implemented."
+>
+> **Blocked by:** U-9 (GPU resource budget numbers — provisional defaults permitted from Phase 2 onward, full hardware survey targeted at this phase) and U-11 (per-subsystem CPU budget split — provisional split given at §100.1, finalized at Phase 10). Neither blocks starting this phase; both must use the provisional values in §88.1/§100.1 until resolved.
 
 ### 132. PHASE 4
 
@@ -1226,6 +1230,8 @@ Plugin Platform. Implement: Plugin API, Manifest, Registry, Loader, Validator, U
 Export: 1080p, 4K, vertical, square, custom, H.264, HEVC where supported, AAC.
 
 > Includes capability pre-flight probing (§96.1), Foreground Service (§92.1), GPU-surface encoder hand-off (§92.1), and the bounded retry policy (§94.1).
+>
+> **Blocked by:** U-6 (Foreground Service type classification — must be verified against current Android platform policy before the export Foreground Service, §92.1, is implemented).
 
 ### 137. PHASE 9
 
@@ -1238,12 +1244,16 @@ Project management: save, autosave, recovery, migration, backup, duplicate.
 Performance hardening.
 
 > Includes the Adaptive Quality Degradation Ladder (§87.2), decode-for-purpose asset policy (§88.3), video proxy workflow (§34A), and per-subsystem CPU budgeting (§100.1).
+>
+> **Blocked by:** U-9 (GPU resource budget numbers — finalized here, provisional since Phase 2), U-10 (Adaptive Quality Degradation Ladder's exact trigger thresholds), and U-11 (per-subsystem CPU budget split — finalized here, provisional since Phase 3). This phase is where all three provisional values from earlier phases must be replaced with real, device-matrix-derived numbers.
 
 ### 139. PHASE 11
 
 Production QA.
 
 > Includes the full Production Readiness Gate (§148) and the Plugin API Compatibility Regression Suite (§68.1) running against the full archived plugin corpus.
+>
+> **Blocked by:** U-17 (exact device-matrix hardware list — needed to run the Device Matrix Smoke Tests, §77.1/§122, this phase depends on).
 
 ### 140. DO NOT IMPLEMENT EVERYTHING AT ONCE
 
@@ -1429,27 +1439,27 @@ Every ARCHITECTURE_REVIEW.md finding marked **Spec change: Y**, and where it is 
 
 Everything above is now **ratified, binding specification text** — it is not awaiting approval. The items below are the ones the Review flagged as needing a numeric value, a technology selection, a feasibility spike, or a business/product/legal judgment call that architecture alone cannot settle. **No implementation work should begin on a phase that depends on an unresolved item below** (cross-referenced to the phase in §128–§140 it blocks).
 
-| # | Decision | Nature | Blocks phase |
-|---|---|---|---|
-| U-1 | Dependency injection framework selection (e.g. Hilt vs. Koin vs. manual) | Technology/team preference | Phase 1 |
-| U-2 | Minimum supported Android API level | Business/market-reach decision (also gates which `MediaCodec`/Compose/Foreground-Service capabilities are available) | Phase 1 |
-| U-3 | WASM runtime library selection (e.g. Wasmtime vs. Wasmer, via JNI) and an Android feasibility spike confirming acceptable binary size/startup latency/performance | Technology selection + feasibility spike required | Phase 7 |
-| U-4 | Plugin API major-version shim support window (how many prior majors, how many years) | Support-policy/business decision | Phase 7, ongoing |
-| U-5 | Exact per-category SSIM (or equivalent) golden-test thresholds | Empirical tuning, needs real reference-device renders | Phase 1 (infrastructure), refined through all phases |
-| U-6 | Foreground Service type classification (`dataSync` vs. `specialUse` vs. other) for export, verified against current Android platform policy at implementation time | Platform-policy compliance decision, may change over time | Phase 8 |
-| U-7 | Timeline for activating the opt-in crash/plugin-failure telemetry hook (§98), and its exact data-minimization/consent UX | Privacy/legal decision | Post-v1 (hook reserved now, per §98) |
-| U-8 | Accessibility conformance target (e.g. which WCAG-equivalent level, or platform-specific Android accessibility guideline) for the editing UI | Product/legal decision | Phase applies across UI work, formalize before Phase 2 UI begins |
-| U-9 | Specific GPU resource budget numbers per device tier (max FBOs, max texture memory, max effect-chain depth) referenced in §88.1 | Needs a real hardware survey (§122) to set numbers responsibly | Phase 3 (hardware survey), enforced from Phase 2 onward with provisional defaults |
-| U-10 | Specific Adaptive Quality Degradation Ladder thresholds (§87.2) — at what measured frame-time/device-tier each ladder step triggers | Needs device-matrix profiling data | Phase 10 |
-| U-11 | Exact per-subsystem CPU time budget split within the 16.67ms frame (§100.1's indicative numbers are provisional) | Needs profiling data from a working renderer | Phase 3 onward, finalized Phase 10 |
-| U-12 | Whether to revisit single-audio-track v1 scope (§1, §15, §19.1) to add multi-track/voiceover/ducking, given §1's own "promotional clips" use case | Product-scope decision | Any phase touching Audio Engine, if reopened |
-| U-13 | Whether/when to schedule actual implementation of Color Grading as a `FinalComposite`-scope Effect Plugin (§37A) — architecture is reserved now, feature build is not scheduled | Product roadmap decision | Post-v1 |
-| U-14 | Whether/when a future networked plugin class (e.g. cloud-render exporter) should be designed, given `NETWORK` is removed entirely from v1 (§61.1) | Product roadmap + security-review decision (would require its own manifest/signature/review model) | Post-v1, if ever |
-| U-15 | HDR/wide-gamut color pipeline — v2.0/v3.0 both say "architecture prepared for" (§90) but do not schedule it; confirm target phase, if any | Product roadmap decision | Post-v1, if ever |
-| U-16 | `.arp` package integrity-signature scheme specifics (which cryptographic scheme, key management/generation for plugin authors) implied by §46/§60.2 | Security-engineering decision, needs its own design pass | Phase 7 |
-| U-17 | Exact device-matrix hardware list (specific SoCs/RAM tiers/tablet models) to standardize on for §122 device testing | Needs current-year market data at implementation time | Phase 10–11 |
-| U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | N/A (explicitly deferred; confirm deferral stands) |
-| U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
-| U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Phase 7, before UI-schema-generation work begins |
+| # | Decision | Nature | Owner | Blocks phase |
+|---|---|---|---|---|
+| U-1 | Dependency injection framework selection (e.g. Hilt vs. Koin vs. manual) | Technology/team preference | Project Owner | Phase 1 |
+| U-2 | Minimum supported Android API level | Business/market-reach decision (also gates which `MediaCodec`/Compose/Foreground-Service capabilities are available) | Project Owner | Phase 1 |
+| U-3 | WASM runtime library selection (e.g. Wasmtime vs. Wasmer, via JNI) and an Android feasibility spike confirming acceptable binary size/startup latency/performance | Technology selection + feasibility spike required | Project Owner | Phase 7 |
+| U-4 | Plugin API major-version shim support window (how many prior majors, how many years) | Support-policy/business decision | Project Owner | Phase 7, ongoing |
+| U-5 | Exact per-category SSIM (or equivalent) golden-test thresholds | Empirical tuning, needs real reference-device renders | Project Owner | Phase 1 (infrastructure), refined through all phases |
+| U-6 | Foreground Service type classification (`dataSync` vs. `specialUse` vs. other) for export, verified against current Android platform policy at implementation time | Platform-policy compliance decision, may change over time | Project Owner | Phase 8 |
+| U-7 | Timeline for activating the opt-in crash/plugin-failure telemetry hook (§98), and its exact data-minimization/consent UX | Privacy/legal decision | Project Owner | Post-v1 (hook reserved now, per §98) |
+| U-8 | Accessibility conformance target (e.g. which WCAG-equivalent level, or platform-specific Android accessibility guideline) for the editing UI | Product/legal decision | Project Owner | Phase applies across UI work, formalize before Phase 2 UI begins |
+| U-9 | Specific GPU resource budget numbers per device tier (max FBOs, max texture memory, max effect-chain depth) referenced in §88.1 | Needs a real hardware survey (§122) to set numbers responsibly | Project Owner | Phase 3 (hardware survey), enforced from Phase 2 onward with provisional defaults |
+| U-10 | Specific Adaptive Quality Degradation Ladder thresholds (§87.2) — at what measured frame-time/device-tier each ladder step triggers | Needs device-matrix profiling data | Project Owner | Phase 10 |
+| U-11 | Exact per-subsystem CPU time budget split within the 16.67ms frame (§100.1's indicative numbers are provisional) | Needs profiling data from a working renderer | Project Owner | Phase 3 onward, finalized Phase 10 |
+| U-12 | Whether to revisit single-audio-track v1 scope (§1, §15, §19.1) to add multi-track/voiceover/ducking, given §1's own "promotional clips" use case | Product-scope decision | Project Owner | Any phase touching Audio Engine, if reopened |
+| U-13 | Whether/when to schedule actual implementation of Color Grading as a `FinalComposite`-scope Effect Plugin (§37A) — architecture is reserved now, feature build is not scheduled | Product roadmap decision | Project Owner | Post-v1 |
+| U-14 | Whether/when a future networked plugin class (e.g. cloud-render exporter) should be designed, given `NETWORK` is removed entirely from v1 (§61.1) | Product roadmap + security-review decision (would require its own manifest/signature/review model) | Project Owner | Post-v1, if ever |
+| U-15 | HDR/wide-gamut color pipeline — v2.0/v3.0 both say "architecture prepared for" (§90) but do not schedule it; confirm target phase, if any | Product roadmap decision | Project Owner | Post-v1, if ever |
+| U-16 | `.arp` package integrity-signature scheme specifics (which cryptographic scheme, key management/generation for plugin authors) implied by §46/§60.2 | Security-engineering decision, needs its own design pass | Project Owner | Phase 7 |
+| U-17 | Exact device-matrix hardware list (specific SoCs/RAM tiers/tablet models) to standardize on for §122 device testing | Needs current-year market data at implementation time | Project Owner | Phase 10–11 |
+| U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | Project Owner | N/A (explicitly deferred; confirm deferral stands) |
+| U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | Project Owner | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
+| U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Project Owner | Phase 7, before UI-schema-generation work begins |
 
 **Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred.
