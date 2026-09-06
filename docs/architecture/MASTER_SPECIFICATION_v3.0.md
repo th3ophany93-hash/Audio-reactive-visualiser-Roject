@@ -69,7 +69,7 @@ The architecture must therefore support: CORE ENGINE + EXTENSION API + PLUGIN RU
 
 The user must NOT have to wait for a new APK merely because a new effect is required.
 
-> **[RATIFIED — Ref AR-19.1]** **v1 scope is explicitly a single audio track per project.** Item 2 ("Import music") and all of §15–§21 assume exactly one audio asset per project. Multi-track audio mixing, voiceover-over-music, and ducking/sidechain are **explicitly out of scope for v1** and are not implied anywhere in this document unless a section says otherwise. This resolves an ambiguity in v2.0 §1, which gestured at "promotional clips" (implying possible voiceover use) without stating a track-count scope. See Appendix B (Unresolved Decisions) item U-15 for whether this should be revisited.
+> **[RATIFIED — Ref AR-19.1]** **v1 scope is explicitly a single audio track per project.** Item 2 ("Import music") and all of §15–§21 assume exactly one audio asset per project. Multi-track audio mixing, voiceover-over-music, and ducking/sidechain are **explicitly out of scope for v1** and are not implied anywhere in this document unless a section says otherwise. This resolves an ambiguity in v2.0 §1, which gestured at "promotional clips" (implying possible voiceover use) without stating a track-count scope. See Appendix B (Unresolved Decisions) item U-12 for whether this should be revisited.
 
 ### 2. CORE DIFFERENTIATOR
 
@@ -181,6 +181,8 @@ At `timestamp = T`, the scene state must be deterministic. The output should not
 >
 > Any modulator with temporal behavior (envelope follower, peak/gravity, smoothing) must be implemented as a **deterministic integration from a fixed epoch** (project start, or the modulator's last explicit reset/keyframe boundary — never "whenever this code path first happened to run") over the immutable `AudioAnalysisCache`. Concretely: computing the resolved value of such a modulator at time T must give the bit-identical result whether it is the first frame ever requested for this project or the ten-thousandth, and regardless of what other timestamps were requested before it, in what order.
 >
+> **The fixed epoch is `t=0` of the raw audio asset (absolute audio-source time), never `t=0` of the trimmed timeline.** All temporal modulator integration (§27.2's Resolved Modulation Cache included) is indexed in absolute audio-source time, exactly like the `AudioAnalysisCache` it reads from (§17.2, §18.1). The Renderer/`ParameterResolver` (§22.1) is solely responsible for translating a requested timeline timestamp `T` into audio-source time via `audioT = T + trimIn` (§14.1) before querying any temporal modulator or the Resolved Modulation Cache — the cache itself never stores or is keyed by timeline time. One direct consequence: **dragging a trim handle (changing `trimIn`/`trimOut`) never invalidates the Resolved Modulation Cache** — it only changes the offset used to query it, which is exactly what makes real-time trim-handle dragging (§16's "immediate visual feedback") affordable. This is the binding resolution of an ambiguity the Review did not fully close (audio-source-time vs. timeline-time indexing was previously unstated); see §27.2 for the corresponding cache-key specification.
+>
 > This is made computationally tractable (not merely correct-but-slow) by the **Resolved Modulation Cache** (§27.2), which precomputes each modulator's full trajectory once per configuration and serves lookups in O(1). Determinism is a correctness property; the cache is a performance property that must never be allowed to change the result, only the cost of obtaining it.
 >
 > A "temporal effect" that intentionally depends on cross-session history (none are specified in this document as of v3.0) would require an explicit, separately-declared, versioned state blob in `ProjectState` — never ambient mutable fields on a live object — and is out of scope unless a future revision adds one.
@@ -189,15 +191,15 @@ At `timestamp = T`, the scene state must be deterministic. The output should not
 
 Project contains: `ProjectMetadata`, `Canvas`, `Audio`, `Assets`, `Timeline`, `Layers`, `Analyzers`, `Plugins`, `RenderSettings`, `ExportSettings`, `ProjectVersion`.
 
-> **[RATIFIED — Ref AR-10.1]** `ProjectMetadata`/`Assets`/etc. as serialized in the portable project file **exclude** the `AudioAnalysisCache` payload and any derived preview-only data (waveform peaks, video proxies). These are external, content-addressed, regenerable caches (§18.1, §14.1(Review)/§82.1) keyed off asset identity, never part of the project file itself. See §81 for the full file-format implication.
+> **[RATIFIED — Ref AR-10.1]** `ProjectMetadata`/`Assets`/etc. as serialized in the portable project file **exclude** the `AudioAnalysisCache` payload and any derived preview-only data (waveform peaks, video proxies). These are external, content-addressed, regenerable caches (§18.1, AR-14.1 (Review)/§82.1) keyed off asset identity, never part of the project file itself. See §81 for the full file-format implication.
 
-**Core Data Model (binding schema; see Appendix A for the full JSON-shape reference):**
+**Core Data Model (binding schema — the schema below is the complete, normative v1 schema; PROJECT_FORMAT.md, §126, restates it for reference but is never a separate or additional source of truth):**
 
 ```
 Project
  ├─ metadata: {id, name, createdAt, modifiedAt, schemaVersion}
  ├─ canvas: {logicalWidth, logicalHeight, aspectPresetId}      # §13.1 — logical units, not pixels
- ├─ audio: {assetRef, trimIn, trimOut, gain, analysisConfigRef} # single track — §1
+ ├─ audio: {assetRef, trimIn, trimOut, gain, analysisConfigHash} # single track — §1; analysisConfigHash matches §18.1's cache key exactly (same name, not a separate "Ref")
  ├─ assets: [AssetRef {id, uri, type, hash, persistedPermission}]
  ├─ timeline: {playheadDefault, zoom}
  ├─ layers: [Layer]
@@ -275,6 +277,7 @@ Timeline contains: Audio track, Layer tracks, Playhead, Time ruler, Zoom, Pan. O
 > - **During interactive preview**, the **audio playback clock is master**. The media playback position (from the audio decoder/player, e.g. an `AudioTrack`/`ExoPlayer`-style position) drives the render timestamp `T` requested from the RenderGraph each frame. Dropped video frames are acceptable (the renderer simply renders fewer of the requested timestamps); dropped or resampled audio is not acceptable under any circumstance.
 > - **During export**, there is no live audio playback clock. Export is driven by a **virtual frame clock** — `T = frameIndex / exportFps` — and every single frame at every such `T` is rendered with no drops. Export audio is rendered/mixed independently (not synchronized to a live clock) and muxed against the video stream using the same nominal timestamps. This is intentionally a *different* clock-authority regime from preview, and this difference is safe specifically *because* export never drops frames — sample-accurate sync is achieved at mux time, not by sharing a clock object with preview.
 > - Both regimes are equally deterministic per §9.1: whichever clock is master, the frame at timestamp T is still the pure function defined in §9.1.
+> - The timestamp `T` above (in both regimes) is **timeline time**, relative to the trimmed selection's own `t=0`. Per §9.1, all audio-analysis-derived modulation is indexed in absolute **audio-source time**; the translation `audioT = T + trimIn` happens exactly once, inside `ParameterResolver` (§22.1), and nowhere else — layers, effects, and plugins only ever receive already-resolved values for timeline time `T` and never reason about `trimIn` themselves.
 
 #### 14.2 Layer Visibility Is a Compositing Gate, Not a Modulator Reset
 
@@ -338,7 +341,7 @@ Support logarithmic frequency visualization. Default bands: `20–60, 60–120, 
 
 Expose: `beatConfidence, beatPhase, tempo, onsetStrength`. Do not assume all music has stable BPM. Beat detection is supplementary. It must never replace raw spectral analysis.
 
-> **[RATIFIED — Ref AR-1.4, AR-7.2]** This resolves the tension between "beat is supplementary" and the UI treating Beat as an equally-weighted first-class reactive source (§105, §107, §149):
+> **[RATIFIED — Ref AR-7.2; CLARIFIED — Ref AR-1.4 (marked N / clarify-only in the Review, not a required spec change, but incorporated here as a non-binding clarification)]** This resolves the tension between "beat is supplementary" and the UI treating Beat as an equally-weighted first-class reactive source (§105, §107, §149):
 >
 > - Beat/tempo/onset are exposed identically to any other `ReactiveSource` (Bass, Mid, RMS, etc.) in every reactive-mapping picker — there is no special-cased "less important" UI treatment.
 > - However, **every `ReactiveSource` carries a `reliability`/`confidence` channel** (not just beat — this generalizes to any source that can legitimately be unreliable for certain input, e.g. a custom analyzer plugin on silence). For Beat specifically, when `beatConfidence` is below a documented threshold for a sustained window (e.g. persistently low on ambient/rubato/beatless music, an explicitly supported genre per §110's "Dark Ambient" template), the resolved beat-driven modulator output **holds its last stable value or decays toward the mapping's configured neutral point** — it never free-runs into noisy false triggers.
@@ -401,7 +404,18 @@ Recommended: `Base Value → Keyframe Modifier → Audio Modifier → Noise/Rand
 
 #### 27.2 Resolved Modulation Cache
 
-> **[RATIFIED — Ref AR-8.2, AR-11.2]** New, mandatory performance/correctness mechanism: for every `(parameter, mapping-configuration-hash)` pair, the full modulator trajectory is **precomputed once, at the same 100Hz resolution as the AudioAnalysisCache (§17.2)**, and cached. This cache is invalidated **only** when the mapping's own configuration changes (attack/release/curve/gain/etc. edited) — never by scrubbing, seeking, or playback. Consequences, both binding:
+> **[RATIFIED — Ref AR-8.2, AR-11.2]** New, mandatory performance/correctness mechanism: for every parameter's ordered list of `ReactiveMapping`s, the **audio-driven modulator delta trajectory** — i.e. the fold of `ReactiveMapping`s per §27.1, evaluated in absolute audio-source time per §9.1 — is **precomputed once, at the same 100Hz resolution as the AudioAnalysisCache (§17.2)**, and cached.
+>
+> **What is cached, precisely:** only the audio-driven delta (the reactive-mapping fold). The `keyframeTrack` base value (§27.1) is **never** part of this cache — it is cheap to evaluate (O(1) curve interpolation) and is always evaluated live at query time, then combined with the cached delta per §27.1's pipeline. Consequently, editing a `keyframeTrack` never invalidates this cache.
+>
+> **Cache key, precisely:** `(parameterId, mappingConfigurationHash, audioAnalysisCacheKey, analyzerSourceVersionKey?)`, where:
+> - `mappingConfigurationHash` is a hash of the parameter's full, ordered `ReactiveMapping[]` list — including each mapping's `source` reference, not just its tuning fields (gain/attack/release/curve/etc.).
+> - `audioAnalysisCacheKey` is exactly the `(assetHash, analysisConfigHash)` key the underlying `AudioAnalysisCache` is itself keyed by (§18.1) — never omitted, since without it a change of audio asset or analysis settings (FFT size, §106) would not invalidate this downstream cache, silently serving the old audio's trajectory against new audio, in direct violation of §18's rule that changing the audio file or analysis settings "MUST invalidate appropriate analysis data."
+> - `analyzerSourceVersionKey` is `(pluginId, pluginVersion)` (or a content hash of the plugin's WASM module) for any mapping whose `source` resolves to a Tier-2 Analyzer Plugin output (§55/§56.1) — omitted only when every mapping's source is a built-in feature. Without this, updating an Analyzer Plugin (which can change its algorithm/output for identical audio) would not invalidate cache entries computed under the plugin's previous version.
+>
+> **Invalidation rule:** the cache entry is invalidated and recomputed whenever **any** component of this key changes — a mapping is edited or reordered, the audio asset is swapped/re-imported, analysis settings change, or a contributing Analyzer Plugin is updated. It is invalidated by **none** of: scrubbing, seeking, playback, dropped frames, keyframe edits, or trim-handle dragging (§9.1 defines why trim is excluded). No cache entry may remain valid when any of its semantic inputs above has changed, without exception.
+>
+> Consequences, both binding:
 >
 > - **Scrubbing/seeking becomes an O(1) cache lookup**, not an O(t) re-integration from epoch, keeping Timeline interactions (§14) feeling instant regardless of track length.
 > - **Preview frame drops cannot change a modulator's trajectory** — dropped frames simply mean fewer samples of an already-fixed, precomputed trajectory are displayed. This is the concrete mechanism that guarantees preview-vs-export parity under performance variation (resolves the Review's determinism-under-frame-drop concern).
@@ -475,13 +489,13 @@ V1: Blur, Glow, Chromatic Aberration, RGB Split, Glitch, Fisheye, Barrel Distort
 
 ### 37A. COLOR GRADING (POST-V1, ARCHITECTURALLY RESERVED NOW)
 
-> **[RATIFIED — Ref AR-19.3]** Not present in v2.0. Color grading (curves, LUT application, three-way color wheels) as a final-composite adjustment is **explicitly scoped as a post-v1 feature**, but the architecture must confirm *now* that it is expressible as an ordinary Effect Plugin with a special scope: **"operates on the final composite output," not a single layer.** The Plugin/Effect model (§36, §52) must support an effect class whose declared scope is `FinalComposite` rather than `PerLayer`, validated by a golden test fixture before this feature is actually built, even though the feature itself is deferred. See Appendix B, item U-16, for whether/when to schedule its implementation.
+> **[RATIFIED — Ref AR-19.3]** Not present in v2.0. Color grading (curves, LUT application, three-way color wheels) as a final-composite adjustment is **explicitly scoped as a post-v1 feature**, but the architecture must confirm *now* that it is expressible as an ordinary Effect Plugin with a special scope: **"operates on the final composite output," not a single layer.** The Plugin/Effect model (§36, §52) must support an effect class whose declared scope is `FinalComposite` rather than `PerLayer`, validated by a golden test fixture before this feature is actually built, even though the feature itself is deferred. See Appendix B, item U-13, for whether/when to schedule its implementation.
 
 ### 38. BLEND MODES
 
 Minimum: `Normal, Add, Screen, Multiply, Overlay, Soft Light, Hard Light, Difference, Exclusion, Darken, Lighten`.
 
-> All blend-mode math is defined and executed in **linear light color space** — see §90.1.
+> **[RATIFIED — Ref AR-2.2]** All blend-mode math is defined and executed in **linear light color space** — see §90.1.
 
 ### 39. MASKS
 
@@ -491,7 +505,7 @@ Required: Rectangle, Circle, Gradient, Image Mask. Future: Vector Mask, Animated
 
 RGBA, HEX, Opacity, Gradient. Gradient: 2–8 stops.
 
-> Color interpolation (for keyframes and gradients alike) is defined in §41.1 and executed in linear space per §90.1.
+> **[RATIFIED — Ref AR-2.2]** Color interpolation (for keyframes and gradients alike) is defined in §41.1 and executed in linear space per §90.1.
 
 ### 41. KEYFRAME SYSTEM
 
@@ -542,7 +556,7 @@ Plugin  Plugin    Plugin
 
 Plugins interact ONLY through documented APIs. Plugins must not access arbitrary internal engine state.
 
-> **[RATIFIED — Ref AR-5.2]** The Plugin Registry (below) is a **passively queryable** component: it exposes `List<LayerTypeDescriptor>`, `List<ReactiveSourceDescriptor>`, and equivalent descriptor lists for effects/visualizers/generators, observable by the `ui` module (e.g. via a reactive stream). The Registry has **zero dependency on `ui` or Compose**; plugins never push UI elements into the host directly (that would violate the declarative-UI-schema model of §47/§48). The `ui` module polls/observes the Registry to populate menus (Add Layer, Effects list, Reactive Source pickers) — dependency direction is one-way, `ui → plugins.registry`, never the reverse.
+> **[CLARIFIED — Ref AR-5.2 (marked N / implementation detail in the Review, not a required spec change, but incorporated here as a non-binding clarification)]** The Plugin Registry (below) is a **passively queryable** component: it exposes `List<LayerTypeDescriptor>`, `List<ReactiveSourceDescriptor>`, and equivalent descriptor lists for effects/visualizers/generators, observable by the `ui` module (e.g. via a reactive stream). The Registry has **zero dependency on `ui` or Compose**; plugins never push UI elements into the host directly (that would violate the declarative-UI-schema model of §47/§48). The `ui` module polls/observes the Registry to populate menus (Add Layer, Effects list, Reactive Source pickers) — dependency direction is one-way, `ui → plugins.registry`, never the reverse.
 
 ### 45. PLUGIN FORMAT
 
@@ -557,7 +571,7 @@ Manifest includes: `pluginId, name, author, version, description, type, apiVersi
 > **[RATIFIED — Ref AR-9.3, AR-16.1]**
 >
 > - The manifest additionally includes a mandatory `migrations: List<VersionRange -> MigrationEntryPoint>` field for any plugin with persisted state beyond flat scalar parameters (any Layer, Effect config, or Analyzer config that stores structured data). See §69.1.
-> - `signature` is defined precisely: it is a **self-signature used for integrity and update-authenticity only** (detecting tampering between versions, and confirming a claimed "update" actually originates from the same author key as the original install). It is explicitly **not** an authorization or vetting signal — there is no implied central review or app-store-style approval behind it. See §60.2 for the full trust-model statement, which the install-time UI must communicate honestly to the user.
+> - `signature` is defined precisely: it is a **self-signature used for integrity and update-authenticity only** (detecting tampering between versions, and confirming a claimed "update" actually originates from the same author key as the original install). It is explicitly **not** an authorization or vetting signal — there is no implied central review or app-store-style approval behind it. See §60.2 for the full trust-model statement, which the install-time UI must communicate honestly to the user. The concrete cryptographic scheme and key-management approach for this signature are open — see Appendix B, item U-16.
 
 ### 47. PLUGIN UI SCHEMA
 
@@ -569,6 +583,8 @@ A plugin does NOT need to modify Kotlin Compose source merely to create its sett
 
 #### 48.1 Graceful Degradation for Unknown Control Types
 
+> This section and §47 describe the UI Schema's controls and rendering behavior, but not yet a formal grammar (exact JSON keys/shapes for groups, sections, dependencies, and visibility rules) — that grammar is Plugin API surface required before Phase 7 can implement UI-schema generation; see Appendix B, item U-20.
+>
 > **[RATIFIED — Ref AR-2.5]** New, mandatory requirement: if a plugin declares a UI control type the current host version does not recognize (e.g. a control introduced in a later Plugin API minor/major version, per §68.1's SemVer policy, loaded by an older host), the host **must render a generic fallback control** (a numeric input for scalar parameter types, a JSON text box for opaque/structured types) rather than omitting the parameter entirely. Silently hiding a parameter the user cannot then access is treated as a correctness defect, not a cosmetic one. This fallback path is a named, tested component (§65/§76), exercised by a dedicated fixture plugin declaring a deliberately-unrecognized control type.
 
 ### 49. PLUGIN PARAMETERS
@@ -617,7 +633,7 @@ Analyzer plugin receives: `AudioBuffer, SampleRate, Timestamp, AnalysisContext`.
 
 > **[RATIFIED — Ref AR-16.3, AR-9.1]** New, mandatory, security-critical specification — this is the actual attack surface of the Analyzer plugin tier and must be treated with syscall-table rigor:
 >
-> - The host-function (import) surface exposed into an Analyzer's WASM linear memory sandbox is an explicit, minimal, **versioned, capability-typed** function table — never a generic `read_memory(ptr, len)` or a host-object callback pattern. Example shape: `get_audio_buffer(outPtr: u32, maxLen: u32) -> u32 (bytes written)`, `get_sample_rate() -> u32`, `emit_feature(name: FeatureId, value: f32)`. Every host function is individually documented and security-reviewed in PLUGIN_SECURITY.md before the Analyzer plugin type ships.
+> - The host-function (import) surface exposed into an Analyzer's WASM linear memory sandbox is an explicit, minimal, **versioned, capability-typed** function table — never a generic `read_memory(ptr, len)` or a host-object callback pattern. Example shape: `get_audio_buffer(outPtr: u32, maxLen: u32) -> u32 (bytes written)`, `get_sample_rate() -> u32`, `emit_feature(name: FeatureId, value: f32)`. Every host function is individually documented and security-reviewed in PLUGIN_SECURITY.md before the Analyzer plugin type ships — the three functions above are illustrative, not the complete table; the complete, closed function table is part of the same Appendix B item U-19 gate described at §57, and Phase 7 must not begin Analyzer plugin implementation until it is authored and reviewed.
 > - Each Analyzer WASM module instance is instantiated with a **hard linear-memory cap** (default 32MB), no filesystem/network/IPC/reflection capability of any kind, and a **fuel-limited (instruction-count-bounded) execution budget per invocation** — a runaway analyzer is killed (fuel exhausted) and that specific invocation fails gracefully (the Reactive Engine treats it like a momentary audio dropout: hold last value), never hanging the analysis or render thread.
 > - See §63.1 for the mandatory validation stages this ABI must pass before an Analyzer plugin is certified, and §60.2 for the overall trust model this sits inside.
 
@@ -625,7 +641,9 @@ Analyzer plugin receives: `AudioBuffer, SampleRate, Timestamp, AnalysisContext`.
 
 Plugin may register a `LayerType` (e.g. "3D Sigil") defining parameters, render method, UI, serialization, reactive targets. The user then sees `Layers → 3D Sigil`.
 
-> A Custom Layer Plugin whose render method requires genuine CPU-side logic (not purely a shader driven by declared parameters) is a **Tier 2 (WASM)** plugin per §60.1, using an ABI analogous to §56.1 but scoped to vertex/geometry/texture-descriptor output rather than audio features (defined in PLUGIN_API.md at implementation time, following the same capability-typed, versioned, security-reviewed discipline as §56.1 — no new ABI may be added to the platform without following that discipline).
+> **[RATIFIED — Ref AR-1.2]** A Custom Layer Plugin whose render method requires genuine CPU-side logic (not purely a shader driven by declared parameters) is a **Tier 2 (WASM)** plugin per §60.1, using an ABI scoped to vertex/geometry/texture-descriptor output rather than audio features, following the same capability-typed, versioned, security-reviewed discipline as §56.1 — no new ABI may be added to the platform without following that discipline.
+>
+> **This ABI is not yet specified in this document and is a hard gate on Phase 7, not an implementation detail to be invented while coding.** Unlike §56.1's Analyzer ABI (which already gives concrete example host functions and resource limits), no function table exists here at all. See Appendix B, item U-19: Phase 7 (§135) must not begin implementing any Tier-2 Custom Layer or CPU-logic Generator plugin until a complete, versioned, capability-typed function table for this category has been authored and has passed the same security-review rigor §56.1 requires of the Analyzer ABI.
 
 ### 58. PLUGIN IMPORTER
 
@@ -654,11 +672,11 @@ DO NOT use arbitrary runtime C#/Kotlin code loading as the default plugin mechan
 
 ### 61. PLUGIN PERMISSIONS
 
-Plugins declare permissions. Examples: `GPU_RENDER, AUDIO_ANALYSIS, ASSET_READ, PROJECT_READ, PROJECT_WRITE, NETWORK, FILE_EXPORT`. Default: NO NETWORK. A plugin should receive only the capabilities it needs.
+Plugins declare permissions. Examples: `GPU_RENDER, AUDIO_ANALYSIS, ASSET_READ, PROJECT_READ, PROJECT_WRITE, ~~NETWORK~~, FILE_EXPORT` (NETWORK struck — removed entirely, see §61.1). A plugin should receive only the capabilities it needs.
 
 #### 61.1 NETWORK Removed From the v1 Permission Set
 
-> **[RATIFIED — Ref AR-9.4]** `NETWORK` is **removed from the v1 permission set entirely** — it is not merely default-off, it does not exist as a grantable permission for any plugin type defined in this document (Effect, Visualizer, Generator, Analyzer, Layer, Importer, Exporter). No plugin type described in §43–§59 has a legitimate v1 use case for network access, and offering it as a checkbox permission alongside `GPU_RENDER` meaningfully and needlessly expands the attack surface of a system designed to run untrusted sideloaded content (contradicting the Privacy stance, §114). If a genuinely networked plugin use case emerges later (e.g. a cloud-render exporter), it requires a **distinct, separately-designed, heavily-scrutinized plugin class** with its own manifest signature/review requirements — not a re-added checkbox on the existing permission set. See Appendix B, item U-17.
+> **[RATIFIED — Ref AR-9.4]** `NETWORK` is **removed from the v1 permission set entirely** — it is not merely default-off, it does not exist as a grantable permission for any plugin type defined in this document (Effect, Visualizer, Generator, Analyzer, Layer, Importer, Exporter). No plugin type described in §43–§59 has a legitimate v1 use case for network access, and offering it as a checkbox permission alongside `GPU_RENDER` meaningfully and needlessly expands the attack surface of a system designed to run untrusted sideloaded content (contradicting the Privacy stance, §114). If a genuinely networked plugin use case emerges later (e.g. a cloud-render exporter), it requires a **distinct, separately-designed, heavily-scrutinized plugin class** with its own manifest signature/review requirements — not a re-added checkbox on the existing permission set. See Appendix B, item U-14.
 
 ### 62. PLUGIN SANDBOX
 
@@ -872,7 +890,7 @@ Target: 60 FPS preview on modern high-end Android devices. Frame budget: 16.67ms
 > 3. Content-level settings — **only via an explicit, manual, user-visible project setting** (never automatic, never silent; per §86.1, content knobs are never reduced without the user's explicit action). If the ladder reaches this step automatically, the system instead shows a one-time notice ("this project may not run smoothly on this device") with a manual override the user can choose to apply.
 > 4. Frame-rate target itself (e.g. 30fps preview fallback) — last resort before uncontrolled dropped frames.
 >
-> This ladder is a documented, tested (§121) subsystem — the **Adaptive Quality Controller** — not implicit per-effect logic scattered through the codebase.
+> The exact measured frame-time/device-tier thresholds that trigger each step are open — see Appendix B, item U-10. This ladder is a documented, tested (§121) subsystem — the **Adaptive Quality Controller** — not implicit per-effect logic scattered through the codebase.
 
 ### 88. GPU RESOURCE MANAGEMENT
 
@@ -880,7 +898,7 @@ Central managers: `TextureManager, FramebufferManager, ShaderManager, PipelineMa
 
 #### 88.1 Resource Budget Enforced at Edit Time
 
-> **[RATIFIED — Ref AR-5.3]** New, mandatory requirement: the Renderer enforces a **hard, configurable resource budget** — maximum concurrent FBOs, maximum texture memory, maximum effect-chain depth, maximum `GroupLayer` nesting depth (e.g. depth ≤ 8) — validated **at project-edit time** (the UI warns/blocks adding another effect or nesting another group once the budget is hit), not merely discovered as a runtime failure. `TextureManager`/`FramebufferManager` expose a budget-tracking query API the UI calls before permitting the action. Preview Quality mode (§86) scales this budget down further on lower-end hardware per §96.
+> **[RATIFIED — Ref AR-5.3]** New, mandatory requirement: the Renderer enforces a **hard, configurable resource budget** — maximum concurrent FBOs, maximum texture memory, maximum effect-chain depth, maximum `GroupLayer` nesting depth (e.g. depth ≤ 8; exact numbers per device tier are open — see Appendix B, item U-9) — validated **at project-edit time** (the UI warns/blocks adding another effect or nesting another group once the budget is hit), not merely discovered as a runtime failure. `TextureManager`/`FramebufferManager` expose a budget-tracking query API the UI calls before permitting the action. Preview Quality mode (§86) scales this budget down further on lower-end hardware per §96.
 
 #### 88.2 GL Command Queue (Cross-Thread Resource Mutation)
 
@@ -902,7 +920,7 @@ Support SDR. Architecture prepared for wide gamut/HDR. Preview/export color hand
 
 #### 90.1 Linear-Light Compositing (Binding)
 
-> **[RATIFIED — Ref AR-2.2]** New, mandatory requirement resolving an unstated ambiguity: all compositing (blend modes §38, gradients §40, keyframe color interpolation §41.1) happens in **linear light** internally — textures are converted sRGB→linear on sample, and the final composite is converted linear→sRGB on output write. This matches standard, correct compositing practice (Porter-Duff over linear color) and is required for blend modes to look industry-standard-correct rather than washed-out/too-dark. `FramebufferManager` must support float or at-least-10-bit intermediate targets to avoid banding; `ShaderManager` injects the standard sRGB↔linear conversion into every shader template automatically (plugin shaders do not need to implement this themselves — it is applied at the sample/output boundary by the host). HDR/wide-gamut remains a prepared-but-not-built future extension per the original v2.0 wording — see Appendix B, item U-18.
+> **[RATIFIED — Ref AR-2.2]** New, mandatory requirement resolving an unstated ambiguity: all compositing (blend modes §38, gradients §40, keyframe color interpolation §41.1) happens in **linear light** internally — textures are converted sRGB→linear on sample, and the final composite is converted linear→sRGB on output write. This matches standard, correct compositing practice (Porter-Duff over linear color) and is required for blend modes to look industry-standard-correct rather than washed-out/too-dark. `FramebufferManager` must support float or at-least-10-bit intermediate targets to avoid banding; `ShaderManager` injects the standard sRGB↔linear conversion into every shader template automatically (plugin shaders do not need to implement this themselves — it is applied at the sample/output boundary by the host). HDR/wide-gamut remains a prepared-but-not-built future extension per the original v2.0 wording — see Appendix B, item U-15.
 
 ### 91. EXPORT FORMATS
 
@@ -973,7 +991,7 @@ Show FPS, frame time, GPU time, CPU time, audio time, playhead time, layer count
 
 #### 100.1 Per-Subsystem CPU Time Breakdown
 
-> **[RATIFIED — Ref AR-12.3]** New, mandatory requirement: CPU time is broken down **per subsystem** (indicative split within the 16.67ms budget: Reactive Engine evaluation ≤2ms, RenderGraph diff/command-build ≤2ms, GL driver submission ≤2ms, remainder for GPU-bound wait/vsync), shown as **separate bars in the Debug Overlay**, not a single aggregate "CPU time" number. Each subsystem self-instruments with named timing spans from day one — this is required so a performance regression is diagnosed against the correct subsystem rather than "fixed" by degrading the wrong one (e.g. cutting GPU quality when the actual bottleneck is Reactive Engine evaluation of many chained mappings).
+> **[RATIFIED — Ref AR-12.3]** New, mandatory requirement: CPU time is broken down **per subsystem** (indicative split within the 16.67ms budget: Reactive Engine evaluation ≤2ms, RenderGraph diff/command-build ≤2ms, GL driver submission ≤2ms, remainder for GPU-bound wait/vsync — this split is provisional, see Appendix B, item U-11), shown as **separate bars in the Debug Overlay**, not a single aggregate "CPU time" number. Each subsystem self-instruments with named timing spans from day one — this is required so a performance regression is diagnosed against the correct subsystem rather than "fixed" by degrading the wrong one (e.g. cutting GPU quality when the actual bottleneck is Reactive Engine evaluation of many chained mappings).
 
 ### 101. THREADING
 
@@ -1069,7 +1087,9 @@ Do not upload user music, images, projects, or videos without explicit future op
 
 ### 116. CODE ORGANIZATION
 
-Suggested modules: `app/`, `core/{model, project, assets, time, diagnostics}`, `audio/{decoder, playback, analysis, cache, beat}`, `reactive/{mapping, envelope, curves, modulation}`, `renderer/{core, backend, opengl, shaders, textures, framebuffers, compositor}`, `layers/{image, video, text, spectrum, waveform, oscilloscope, particles, shapes}`, `effects/{blur, glow, glitch, chromatic, distortion, kaleidoscope, noise, shake}`, `timeline/`, `export/`, `plugins/{api, runtime, registry, validator, sandbox, laboratory, sdk}`, `ui/`, `testing/{audio, renderer, project, plugins, export, performance, golden}`.
+> **[RATIFIED — Ref AR-18.1]** This corrects v2.0's module list, which mixed engine-native and first-party-plugin layer/effect types under one undifferentiated `layers/`/`effects/` grouping — inconsistent with the core-vs-plugin split ratified at §12.1/§30.1/§37.1, and load-bearing here because Phase 1 (§129) establishes the enforced module graph from this list:
+>
+> Suggested modules: `app/`, `core/{model, project, assets, time, diagnostics}`, `audio/{decoder, playback, analysis, cache, beat}`, `reactive/{mapping, envelope, curves, modulation}`, `renderer/{core, backend, opengl, shaders, textures, framebuffers, compositor}`, `layers/{image, video, text, shape, gradient, solidcolor, group}` **(engine-native only, per §12.1 — never a home for spectrum/waveform/oscilloscope/particles/shader visualizers)**, `plugins/system/{spectrum, waveform, oscilloscope, particles, shader-effects}` **(first-party plugins, per §30.1/§37.1, built on `plugins/api` exactly like third-party visualizer/effect plugins — blur, glow, glitch, chromatic-aberration, distortion, kaleidoscope, noise, shake, and every other §37 effect live here too, not in a separate `effects/` core module)**, `timeline/`, `export/`, `plugins/{api, runtime, registry, validator, sandbox, laboratory, sdk}`, `ui/`, `testing/{audio, renderer, project, plugins, export, performance, golden}`.
 
 #### 116.1 Enforced Module Dependency Graph
 
@@ -1080,8 +1100,9 @@ Suggested modules: `app/`, `core/{model, project, assets, time, diagnostics}`, `
 >   → audio (decoder, playback, analysis, cache)
 >   → reactive (mapping, envelope, curves, modulation, resolver)
 >   → renderer/core, renderer/backend(gl), shaders, textures, framebuffers, compositor
->   → layers/*, effects/* (built as system plugins on plugins/api, per §12.1/§30.1/§37.1)
+>   → layers/{image, video, text, shape, gradient, solidcolor, group} (engine-native only, §12.1)
 >   → plugins/api (public contract)  ◄── plugins/runtime, registry, validator, sandbox(wasm)
+>   → plugins/system/{spectrum, waveform, oscilloscope, particles, shader-effects, ...} (first-party plugins on plugins/api, per §30.1/§37.1 — mechanistically identical to third-party plugins, never a separate core `effects/` module)
 >   → timeline/, export/
 >   → ui/ (Compose)  ── plugins/laboratory (dev UI)
 > ```
@@ -1120,7 +1141,7 @@ Render deterministic scenes at 320×180. Compare against golden reference with d
 
 ### 122. DEVICE MATRIX
 
-Test conceptually: high-end Snapdragon, mid-range Snapdragon, low-end Android, Pixel-class, Samsung Galaxy-class tablet.
+Test conceptually: high-end Snapdragon, mid-range Snapdragon, low-end Android, Pixel-class, Samsung Galaxy-class tablet. The exact current-year SoC/RAM-tier/tablet-model list to standardize on is open — see Appendix B, item U-17.
 
 > This is the **Device Matrix Smoke Test** tier defined in §77.1 — distinct from, and looser than, the CI Golden Test tier.
 
@@ -1146,7 +1167,7 @@ Maintain: `PROJECT_STATUS.md, ARCHITECTURE.md, TEST_PLAN.md, RENDERING_NOTES.md,
 
 Architecture Decision Records: `ADR-001 Renderer, ADR-002 Audio Analysis, ADR-003 Reactive Engine, ADR-004 Layer Model, ADR-005 Project Format, ADR-006 Export, ADR-007 Plugin System, ADR-008 Plugin Security, ADR-009 Plugin UI, ADR-010 Plugin Runtime, ADR-011 GPU Backend, ADR-012 Testing Strategy`.
 
-> ADR-011 (GPU Backend) is explicitly reserved for the future `VulkanBackend` decision per §6's ratification — it records a boundary-discipline decision now and remains open for the actual second-backend decision later.
+> ADR-011 (GPU Backend) is explicitly reserved for the future `VulkanBackend` decision per §6's ratification — it records a boundary-discipline decision now and remains open for the actual second-backend decision later. Confirmation that this deferral still stands (no v1/near-term Vulkan commitment) is tracked as Appendix B, item U-18.
 
 ---
 
@@ -1198,7 +1219,7 @@ Timeline and keyframes.
 
 Plugin Platform. Implement: Plugin API, Manifest, Registry, Loader, Validator, UI Schema, Shader system, Sandbox, Test Runner, Benchmark, Packaging, Versioning, Migration, Quarantine.
 
-> Generalizes the Tier 1 (Declarative) model already exercised in Phases 4–5, and **adds the Tier 2 (WASM) execution model** (§60.1) with its sandbox, validator stages (§63.1), and host ABI (§56.1) for Analyzer/Layer/Generator-with-logic plugins. Includes the two-phase quarantine model (§67.1), transactional dependency activation (§70.1), and SemVer/shim policy (§68.1).
+> Generalizes the Tier 1 (Declarative) model already exercised in Phases 4–5, and **adds the Tier 2 (WASM) execution model** (§60.1) with its sandbox, validator stages (§63.1), and host ABI (§56.1) for Analyzer/Layer/Generator-with-logic plugins. Includes the two-phase quarantine model (§67.1), transactional dependency activation (§70.1), and SemVer/shim policy (§68.1). **Hard gate:** per §57 and Appendix B item U-19, the complete Analyzer host-function table and the entire Custom Layer/Generator WASM ABI must be authored and security-reviewed before this phase begins any Tier-2 plugin implementation — neither may be designed ad hoc during coding. Per Appendix B item U-20, the Plugin UI Schema's declarative grammar (§47/§48) should also be finalized before this phase's UI-schema-generation work begins.
 
 ### 136. PHASE 8
 
@@ -1248,7 +1269,7 @@ Analyzer plugin: Kick Detector. Mapping: Kick Detector → Logo Scale. Verify: n
 
 Custom Layer Plugin: 3D Sigil. Verify: layer appears in Add Layer; it has custom UI, custom parameters, audio reactivity, serialization, export.
 
-> Per §12.1/§18.3's ratification, this must be built with **zero special-casing in core** — if it were secretly hard-coded, this golden test would not be testing what it claims to.
+> Per §12.1's ratification (Ref AR-18.3), this must be built with **zero special-casing in core** — if it were secretly hard-coded, this golden test would not be testing what it claims to.
 
 ### 145. FIFTH GOLDEN PROJECT
 
@@ -1330,14 +1351,14 @@ DO NOT: create a giant monolithic Activity; put renderer logic inside Compose; p
 
 ## APPENDIX A — TRACEABILITY TABLE
 
-Every ARCHITECTURE_REVIEW.md finding marked **Spec change: Y**, and where it is incorporated in this document:
+Every ARCHITECTURE_REVIEW.md finding marked **Spec change: Y**, and where it is incorporated in this document. Two rows (AR-1.4, AR-5.2) are additionally listed even though the Review marked them **N** (clarify-only / implementation-detail, not a required spec change) — their substance was incorporated anyway as non-binding clarifications, and they are marked accordingly below so this table does not misrepresent them as mandatory Y findings:
 
 | AR Ref | Review Topic | Incorporated in v3.0 §§ |
 |---|---|---|
 | AR-1.1 | Media3 scope boundary | §7, §92 |
 | AR-1.2 | Plugin execution tiers (WASM mandatory) | §45, §60.1, §55, §57, §74 |
 | AR-1.3 | Precise determinism definition | §9.1 |
-| AR-1.4 | Beat status/confidence | §21, §105, §107 |
+| AR-1.4 (N — clarify only) | Beat status/confidence | §21, §105, §107 |
 | AR-1.5 | Two-phase quarantine | §67.1 |
 | AR-2.1 | Coordinate & unit system | §13.1, §10, §49 |
 | AR-2.2 | Linear-light color compositing | §90.1, §38, §40, §41.1 |
@@ -1356,7 +1377,7 @@ Every ARCHITECTURE_REVIEW.md finding marked **Spec change: Y**, and where it is 
 | AR-4.4 | Missing-asset recovery | §82.1 |
 | AR-4.5 | timelineRange as compositing gate only | §14.2 |
 | AR-5.1 | Enforced module dependency graph | §116.1 |
-| AR-5.2 | Passive plugin registry query direction | §44 |
+| AR-5.2 (N — implementation detail) | Passive plugin registry query direction | §44 |
 | AR-5.3 | GPU resource budget at edit time | §88.1 |
 | AR-6.1 | Audio↔render concurrency contract | §18.1, §101.1 |
 | AR-6.2 | GL command queue | §88.2 |
@@ -1428,5 +1449,7 @@ Everything above is now **ratified, binding specification text** — it is not a
 | U-16 | `.arp` package integrity-signature scheme specifics (which cryptographic scheme, key management/generation for plugin authors) implied by §46/§60.2 | Security-engineering decision, needs its own design pass | Phase 7 |
 | U-17 | Exact device-matrix hardware list (specific SoCs/RAM tiers/tablet models) to standardize on for §122 device testing | Needs current-year market data at implementation time | Phase 10–11 |
 | U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | N/A (explicitly deferred; confirm deferral stands) |
+| U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
+| U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Phase 7, before UI-schema-generation work begins |
 
 **Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred.
