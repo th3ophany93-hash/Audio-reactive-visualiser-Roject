@@ -139,11 +139,26 @@ EXTENSIONS
 
 ### 6. TECHNOLOGY BASELINE
 
-Primary language: Kotlin. UI: Jetpack Compose. Rendering abstraction: `RendererBackend`. Initial production backend: OpenGL ES 3.x where required for compatibility. Business logic must never directly depend on a specific graphics backend.
+Primary language: Kotlin. UI: Jetpack Compose. Rendering abstraction: `RendererBackend`. Initial production backend: OpenGL ES 3.x where required for compatibility. Business logic must never directly depend on a specific graphics backend. Dependency injection: **Hilt** (resolves Appendix B U-1). Android build targets: **minSdk 35, compileSdk 36, targetSdk 36** (resolves Appendix B U-2; see §6.1 for the full ratification and rationale).
 
 > **[RATIFIED — Ref AR-17.1]** The "architecture must permit a future VulkanBackend" requirement is **scoped down to a boundary-discipline requirement, not an active engineering deliverable for v1**. Concretely: `renderer/core` business logic (compositor, layer traversal, parameter resolution) must call `RendererBackend` only — never `GLES20.*`/`GLES30.*` directly — enforced by the module dependency graph (§116.1). No Vulkan-specific concepts (explicit command buffers, memory barriers, descriptor sets, render passes) are designed or built into the v1 `RendererBackend` interface. This "leaves the door open" without pre-paying for a second backend that has not yet been validated by real implementation. Building an actual `VulkanBackend` is not part of any phase in §128–§148 and requires a separate future ADR (ADR-011 remains reserved for this).
 
-> **[NOTED — not a Review finding; forward-reference to Appendix B]** Dependency injection framework, minimum supported Android API level, and WASM runtime library selection are **not resolved by this document** — see Appendix B, items U-1, U-2, U-3.
+> **[NOTED — not a Review finding; forward-reference to Appendix B]** WASM runtime library selection is **not resolved by this document** — see Appendix B, item U-3. Dependency injection framework and minimum supported Android API level are now resolved — see §6.1.
+
+#### 6.1 Ratified Android Build Targets (Resolves Appendix B U-1, U-2)
+
+> **[RESOLVED — Appendix B U-1]** Dependency injection framework: **Hilt**. Every platform-singleton component required by §157.1 (e.g. `GLContextHolder`, one `AudioEngine` instance) is injected via Hilt — never referenced as a bare `object`/static field.
+>
+> **[RESOLVED — Appendix B U-2]** Minimum supported Android API level: **API 35 (Android 15)**.
+>
+> **Ratified Android build targets:**
+> - `minSdk = 35` (Android 15)
+> - `compileSdk = 36`
+> - `targetSdk = 36` (Android 16)
+>
+> **Rationale:** Nothing Phone (1), running Android 15 / API 35, is this project's minimum real-device test platform; Xiaomi 14 Pro, running Android 16 / API 36, is the primary higher-tier real-device test platform. Android 14 and lower are intentionally not supported in v1. API 36 is the development/target platform (`compileSdk`/`targetSdk`); API 35 remains the minimum runtime platform (`minSdk`).
+>
+> This ratification does **not** resolve Appendix B item U-17 (the full device-matrix hardware list for §122's Device Matrix Smoke Tests), which remains open — Nothing Phone (1) and Xiaomi 14 Pro are named here only as the rationale anchoring the minSdk/compileSdk/targetSdk decision, not as a complete device-matrix resolution.
 
 ### 7. MEDIA INFRASTRUCTURE
 
@@ -1185,7 +1200,7 @@ Audio: import, decode, playback, waveform, trim, analysis, cache.
 
 > Per §20.O of the Review: also establishes `core/model`, the module dependency-boundary CI check (§116.1), DI setup, and the Coordinate/Color/Clock decisions (§13.1, §90.1, §14.1) as testable primitives **before any UI is built**.
 >
-> **Blocked by:** U-1 (DI framework selection), U-2 (minimum Android API level) — hard blockers, per §128, must be resolved or explicitly deferred before this phase begins. U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist.
+> **Blocked by:** none remaining as hard blockers. U-1 (DI framework) and U-2 (minimum Android API level) are **RESOLVED** — Hilt; API 35 (Android 15) minimum, `compileSdk`/`targetSdk` 36 — see §6.1 and Appendix B. U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist. **Phase 1 has no unresolved hard blockers.**
 
 ### 130. PHASE 2
 
@@ -1437,29 +1452,29 @@ Every ARCHITECTURE_REVIEW.md finding marked **Spec change: Y**, and where it is 
 
 ## APPENDIX B — UNRESOLVED ARCHITECTURAL DECISIONS REQUIRING HUMAN APPROVAL
 
-Everything above is now **ratified, binding specification text** — it is not awaiting approval. The items below are the ones the Review flagged as needing a numeric value, a technology selection, a feasibility spike, or a business/product/legal judgment call that architecture alone cannot settle. **No implementation work should begin on a phase that depends on an unresolved item below** (cross-referenced to the phase in §128–§140 it blocks).
+Everything above is now **ratified, binding specification text** — it is not awaiting approval. The items below are the ones the Review flagged as needing a numeric value, a technology selection, a feasibility spike, or a business/product/legal judgment call that architecture alone cannot settle. **No implementation work should begin on a phase that depends on an unresolved item below** (cross-referenced to the phase in §128–§140 it blocks). Two items (U-1, U-2) have since been resolved — see the `Status` column.
 
-| # | Decision | Nature | Owner | Blocks phase |
-|---|---|---|---|---|
-| U-1 | Dependency injection framework selection (e.g. Hilt vs. Koin vs. manual) | Technology/team preference | Project Owner | Phase 1 |
-| U-2 | Minimum supported Android API level | Business/market-reach decision (also gates which `MediaCodec`/Compose/Foreground-Service capabilities are available) | Project Owner | Phase 1 |
-| U-3 | WASM runtime library selection (e.g. Wasmtime vs. Wasmer, via JNI) and an Android feasibility spike confirming acceptable binary size/startup latency/performance | Technology selection + feasibility spike required | Project Owner | Phase 7 |
-| U-4 | Plugin API major-version shim support window (how many prior majors, how many years) | Support-policy/business decision | Project Owner | Phase 7, ongoing |
-| U-5 | Exact per-category SSIM (or equivalent) golden-test thresholds | Empirical tuning, needs real reference-device renders | Project Owner | Phase 1 (infrastructure), refined through all phases |
-| U-6 | Foreground Service type classification (`dataSync` vs. `specialUse` vs. other) for export, verified against current Android platform policy at implementation time | Platform-policy compliance decision, may change over time | Project Owner | Phase 8 |
-| U-7 | Timeline for activating the opt-in crash/plugin-failure telemetry hook (§98), and its exact data-minimization/consent UX | Privacy/legal decision | Project Owner | Post-v1 (hook reserved now, per §98) |
-| U-8 | Accessibility conformance target (e.g. which WCAG-equivalent level, or platform-specific Android accessibility guideline) for the editing UI | Product/legal decision | Project Owner | Phase applies across UI work, formalize before Phase 2 UI begins |
-| U-9 | Specific GPU resource budget numbers per device tier (max FBOs, max texture memory, max effect-chain depth) referenced in §88.1 | Needs a real hardware survey (§122) to set numbers responsibly | Project Owner | Phase 3 (hardware survey), enforced from Phase 2 onward with provisional defaults |
-| U-10 | Specific Adaptive Quality Degradation Ladder thresholds (§87.2) — at what measured frame-time/device-tier each ladder step triggers | Needs device-matrix profiling data | Project Owner | Phase 10 |
-| U-11 | Exact per-subsystem CPU time budget split within the 16.67ms frame (§100.1's indicative numbers are provisional) | Needs profiling data from a working renderer | Project Owner | Phase 3 onward, finalized Phase 10 |
-| U-12 | Whether to revisit single-audio-track v1 scope (§1, §15, §19.1) to add multi-track/voiceover/ducking, given §1's own "promotional clips" use case | Product-scope decision | Project Owner | Any phase touching Audio Engine, if reopened |
-| U-13 | Whether/when to schedule actual implementation of Color Grading as a `FinalComposite`-scope Effect Plugin (§37A) — architecture is reserved now, feature build is not scheduled | Product roadmap decision | Project Owner | Post-v1 |
-| U-14 | Whether/when a future networked plugin class (e.g. cloud-render exporter) should be designed, given `NETWORK` is removed entirely from v1 (§61.1) | Product roadmap + security-review decision (would require its own manifest/signature/review model) | Project Owner | Post-v1, if ever |
-| U-15 | HDR/wide-gamut color pipeline — v2.0/v3.0 both say "architecture prepared for" (§90) but do not schedule it; confirm target phase, if any | Product roadmap decision | Project Owner | Post-v1, if ever |
-| U-16 | `.arp` package integrity-signature scheme specifics (which cryptographic scheme, key management/generation for plugin authors) implied by §46/§60.2 | Security-engineering decision, needs its own design pass | Project Owner | Phase 7 |
-| U-17 | Exact device-matrix hardware list (specific SoCs/RAM tiers/tablet models) to standardize on for §122 device testing | Needs current-year market data at implementation time | Project Owner | Phase 10–11 |
-| U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | Project Owner | N/A (explicitly deferred; confirm deferral stands) |
-| U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | Project Owner | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
-| U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Project Owner | Phase 7, before UI-schema-generation work begins |
+| # | Decision | Nature | Owner | Status | Blocks phase |
+|---|---|---|---|---|---|
+| U-1 | Dependency injection framework selection (e.g. Hilt vs. Koin vs. manual) | Technology/team preference | Project Owner | **RESOLVED — Hilt** (§6.1) | ~~Phase 1~~ — resolved, no longer blocks |
+| U-2 | Minimum supported Android API level | Business/market-reach decision (also gates which `MediaCodec`/Compose/Foreground-Service capabilities are available) | Project Owner | **RESOLVED — minSdk 35 (Android 15); compileSdk/targetSdk 36 (Android 16)** (§6.1) | ~~Phase 1~~ — resolved, no longer blocks |
+| U-3 | WASM runtime library selection (e.g. Wasmtime vs. Wasmer, via JNI) and an Android feasibility spike confirming acceptable binary size/startup latency/performance | Technology selection + feasibility spike required | Project Owner | OPEN | Phase 7 |
+| U-4 | Plugin API major-version shim support window (how many prior majors, how many years) | Support-policy/business decision | Project Owner | OPEN | Phase 7, ongoing |
+| U-5 | Exact per-category SSIM (or equivalent) golden-test thresholds | Empirical tuning, needs real reference-device renders | Project Owner | OPEN | Phase 1 (infrastructure), refined through all phases |
+| U-6 | Foreground Service type classification (`dataSync` vs. `specialUse` vs. other) for export, verified against current Android platform policy at implementation time | Platform-policy compliance decision, may change over time | Project Owner | OPEN | Phase 8 |
+| U-7 | Timeline for activating the opt-in crash/plugin-failure telemetry hook (§98), and its exact data-minimization/consent UX | Privacy/legal decision | Project Owner | OPEN | Post-v1 (hook reserved now, per §98) |
+| U-8 | Accessibility conformance target (e.g. which WCAG-equivalent level, or platform-specific Android accessibility guideline) for the editing UI | Product/legal decision | Project Owner | OPEN | Phase applies across UI work, formalize before Phase 2 UI begins |
+| U-9 | Specific GPU resource budget numbers per device tier (max FBOs, max texture memory, max effect-chain depth) referenced in §88.1 | Needs a real hardware survey (§122) to set numbers responsibly | Project Owner | OPEN | Phase 3 (hardware survey), enforced from Phase 2 onward with provisional defaults |
+| U-10 | Specific Adaptive Quality Degradation Ladder thresholds (§87.2) — at what measured frame-time/device-tier each ladder step triggers | Needs device-matrix profiling data | Project Owner | OPEN | Phase 10 |
+| U-11 | Exact per-subsystem CPU time budget split within the 16.67ms frame (§100.1's indicative numbers are provisional) | Needs profiling data from a working renderer | Project Owner | OPEN | Phase 3 onward, finalized Phase 10 |
+| U-12 | Whether to revisit single-audio-track v1 scope (§1, §15, §19.1) to add multi-track/voiceover/ducking, given §1's own "promotional clips" use case | Product-scope decision | Project Owner | OPEN (deliberately deferred) | Any phase touching Audio Engine, if reopened |
+| U-13 | Whether/when to schedule actual implementation of Color Grading as a `FinalComposite`-scope Effect Plugin (§37A) — architecture is reserved now, feature build is not scheduled | Product roadmap decision | Project Owner | OPEN (deliberately deferred) | Post-v1 |
+| U-14 | Whether/when a future networked plugin class (e.g. cloud-render exporter) should be designed, given `NETWORK` is removed entirely from v1 (§61.1) | Product roadmap + security-review decision (would require its own manifest/signature/review model) | Project Owner | OPEN (deliberately deferred) | Post-v1, if ever |
+| U-15 | HDR/wide-gamut color pipeline — v2.0/v3.0 both say "architecture prepared for" (§90) but do not schedule it; confirm target phase, if any | Product roadmap decision | Project Owner | OPEN (deliberately deferred) | Post-v1, if ever |
+| U-16 | `.arp` package integrity-signature scheme specifics (which cryptographic scheme, key management/generation for plugin authors) implied by §46/§60.2 | Security-engineering decision, needs its own design pass | Project Owner | OPEN | Phase 7 |
+| U-17 | Exact device-matrix hardware list (specific SoCs/RAM tiers/tablet models) to standardize on for §122 device testing | Needs current-year market data at implementation time | Project Owner | OPEN (§6.1 names two anchor devices as build-target rationale only; the full matrix is still undecided) | Phase 10–11 |
+| U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | Project Owner | OPEN | N/A (explicitly deferred; confirm deferral stands) |
+| U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | Project Owner | OPEN | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
+| U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Project Owner | OPEN | Phase 7, before UI-schema-generation work begins |
 
-**Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred.
+**Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred. **U-1 and U-2 are now resolved (§6.1); every other open item either targets a phase later than Phase 1 or, for U-5, is explicitly non-blocking to Phase 1's start (§129). Phase 1 has no unresolved hard blockers.**
