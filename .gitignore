@@ -1,7 +1,8 @@
 # Gradle
 .gradle/
 build/
-.kotlin/          # Kotlin compiler scratch and error logs
+# Kotlin compiler scratch and error logs
+.kotlin/
 !gradle/wrapper/gradle-wrapper.jar
 
 # Android
