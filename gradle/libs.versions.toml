@@ -1,0 +1,30 @@
+# Version catalogue — single source of truth for dependency versions.
+# Android build targets are ratified in MASTER_SPECIFICATION_v3.0 §6.1 (Appendix B U-2).
+[versions]
+agp = "8.13.2"
+kotlin = "2.2.21"
+ksp = "2.2.21-2.0.5"
+hilt = "2.57.2"
+coroutines = "1.10.2"
+junit = "4.13.2"
+
+# §6.1 ratified build targets — changing these changes the supported device floor.
+minSdk = "35"        # Android 15 — minimum runtime platform
+compileSdk = "36"    # Android 16 — development/target platform
+targetSdk = "36"     # Android 16
+
+[libraries]
+hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+hilt-compiler = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }

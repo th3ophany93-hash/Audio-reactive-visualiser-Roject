@@ -1,0 +1,36 @@
+name: build
+
+# §116.1 requires the module dependency boundary to be enforced by a build-failing
+# check. The check runs at Gradle configuration time, so every job below enforces it;
+# verifyModuleGraph is invoked explicitly so the gate is a named, greppable CI step.
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify module dependency graph (§116.1)
+        run: ./gradlew verifyModuleGraph
+
+      - name: Assemble all modules
+        run: ./gradlew assemble
+
+      - name: Run unit tests
+        run: ./gradlew test
