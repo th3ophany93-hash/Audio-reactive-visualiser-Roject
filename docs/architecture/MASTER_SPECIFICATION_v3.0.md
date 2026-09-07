@@ -293,6 +293,7 @@ Timeline contains: Audio track, Layer tracks, Playhead, Time ruler, Zoom, Pan. O
 > - **During export**, there is no live audio playback clock. Export is driven by a **virtual frame clock** — `T = frameIndex / exportFps` — and every single frame at every such `T` is rendered with no drops. Export audio is rendered/mixed independently (not synchronized to a live clock) and muxed against the video stream using the same nominal timestamps. This is intentionally a *different* clock-authority regime from preview, and this difference is safe specifically *because* export never drops frames — sample-accurate sync is achieved at mux time, not by sharing a clock object with preview.
 > - Both regimes are equally deterministic per §9.1: whichever clock is master, the frame at timestamp T is still the pure function defined in §9.1.
 > - The timestamp `T` above (in both regimes) is **timeline time**, relative to the trimmed selection's own `t=0`. Per §9.1, all audio-analysis-derived modulation is indexed in absolute **audio-source time**; the translation `audioT = T + trimIn` happens exactly once, inside `ParameterResolver` (§22.1), and nowhere else — layers, effects, and plugins only ever receive already-resolved values for timeline time `T` and never reason about `trimIn` themselves.
+> - **[RESOLVED — P-5] Scope of "and nowhere else."** That constraint governs the **render / parameter-resolution pipeline**: within it, `ParameterResolver` is the sole translation site, so no layer, effect, plugin, or renderer ever applies `trimIn` itself. It does **not** govern editor-internal coordinate/time conversion required for display. The Trim Editor (§16) inherently works in audio-source time — it displays the whole asset, with the trim handles and playhead drawn onto it — and its display-space conversions are expected and permitted. An editor converting between domains to draw a waveform is not a violation of this rule; a renderer or plugin applying `trimIn` inside the parameter pipeline is.
 
 #### 14.2 Layer Visibility Is a Compositing Gate, Not a Modulator Reset
 
@@ -328,7 +329,60 @@ Custom: Arbitrary frequency band.
 
 #### 17.2 Analysis Cache Resolution & Interpolation
 
-> **[RATIFIED — Ref AR-2.6]** New, mandatory requirement: the `AudioAnalysisCache` (§18) stores all derived features on a **common fixed timeline at 100Hz (10ms hop)**. The underlying FFT window size is independently configurable (§106, "FFT size," default 2048 samples at 44.1/48kHz with 50% overlap) but every feature — regardless of its native frame rate — is resampled/aligned to the 100Hz storage timeline before caching. Any consumer (Reactive Engine, UI) requesting a value at an arbitrary timestamp T linearly interpolates between the two adjacent 100Hz cache samples. This single decision anchors cache file size estimates, the concurrency contract (§18.1), and the Resolved Modulation Cache's own resolution (§27.2), and must not be changed without re-validating all three.
+> **[RATIFIED — Ref AR-2.6]** New, mandatory requirement: the `AudioAnalysisCache` (§18) stores all derived features on a **common fixed timeline at 100Hz (10ms hop)**. The underlying FFT window size is independently configurable (§106, "FFT size," default 2048 samples — see §17.3 for the ratified canonical sample rate that fixes this window's temporal duration) but every feature — regardless of its native frame rate — is resampled/aligned to the 100Hz storage timeline before caching. Any consumer (Reactive Engine, UI) requesting a value at an arbitrary timestamp T linearly interpolates between the two adjacent 100Hz cache samples. This single decision anchors cache file size estimates, the concurrency contract (§18.1), and the Resolved Modulation Cache's own resolution (§27.2), and must not be changed without re-validating all three.
+>
+> **Note on the FFT hop:** v2.0's parenthetical named a "50% overlap" default alongside this 100Hz storage timeline. Once §17.3 fixes the canonical rate at 48 kHz, those two figures are arithmetically distinct (a 2048-sample window at 50% overlap yields a 46.875 Hz native frame rate, not 100 Hz), so the default hop must be stated explicitly rather than inferred. **This is Appendix B item U-21 and is unresolved** — see §17.5.
+
+#### 17.3 Canonical Analysis Signal and Sample Rate
+
+> **[RESOLVED — P-1, P-2]** All analysis in §17 operates on a single, deterministic **canonical analysis signal**. This signal is an analysis-only derivation: it never replaces, alters, or is substituted for the source audio.
+>
+> **Channel policy (P-1) — the canonical analysis signal is MONO.**
+> - Stereo source: `mono[n] = 0.5 × left[n] + 0.5 × right[n]`.
+> - Mono source: passed through unchanged.
+> - *Derived generalization (flagged, not independently ratified):* sources with more than two channels are downmixed by equal-weight averaging across all channels — the arithmetic generalization of which the ratified stereo rule is the exact two-channel case. Named here explicitly so it is a documented rule rather than a silent assumption; override it if a different multichannel policy is wanted.
+> - **The source is not modified.** The original channel count, channel layout, and sample rate are preserved in the Asset Registry (§82) and in decoder metadata (§15).
+> - **Playback (§14.1, §16) and any future export (§136) use the original source audio, never the canonical mono signal.** Mono is an analysis domain, not an output format.
+> - Every scalar analysis feature in §17 operates on this canonical mono signal unless a future, explicitly ratified feature states otherwise.
+> - §119's stereo fixture is mandatory and must verify deterministic channel handling — specifically that L/R-differing input produces the exact downmix above, repeatably.
+>
+> **Canonical sample rate (P-2) — 48,000 Hz.**
+> - All source PCM whose rate differs from 48 kHz is deterministically resampled to 48 kHz **before** analysis. A source already at 48 kHz is passed through bit-exact, with no resampling stage applied.
+> - The resampler must be a **fixed, software, deterministic** implementation (windowed-sinc polyphase, coefficients defined in code). It must **never** delegate to platform or hardware resampling, whose behavior varies across devices — that would break §9.1's determinism guarantee and make golden vectors device-dependent.
+> - The resampler's coefficient set and algorithm are covered by the analysis algorithm/schema version in §18.2, so any change to it invalidates dependent cache entries.
+> - The canonical analysis sample rate is part of analysis configuration identity (§18.2).
+>
+> **Consequences of fixing the canonical rate:**
+> - The §17.2 default 2048-sample FFT window has exactly one temporal duration: `2048 / 48000 s ≈ 42.667 ms`.
+> - Bin width is `48000 / 2048 = 23.4375 Hz`.
+> - *Informational:* at the default FFT size, §20's lowest default band (20–60 Hz) is covered by roughly two bins. This is an inherent property of a fixed-window FFT, and is why §106 keeps FFT size user-configurable; it is not a defect.
+
+#### 17.4 Retained Spectrum Representation
+
+> **[RESOLVED — P-4]** The full-resolution float32 FFT spectrum is **not** retained. The canonical retained representation is:
+>
+> - **1024 magnitude bins**, **100 Hz** temporal sampling, **FP16 (IEEE 754 binary16)** storage.
+> - **Concrete bin mapping** (the arithmetic meaning of "1024 bins" for the default 2048-point FFT at 48 kHz): a real FFT of a 2048-sample window yields 1025 unique bins (DC through Nyquist). The retained set is **bins 1…1024**; the DC bin (0 Hz) is discarded, as it carries no musical information and is contaminated by DC offset. Retained coverage is 23.4375 Hz … 24,000 Hz.
+> - **Magnitude scaling:** magnitudes are normalized against the canonical signal's full-scale reference before FP16 conversion. FP16 carries a 10-bit mantissa (~3 decimal digits); §119's "very quiet signal" fixture is the designated test for whether that precision holds at low amplitude. Should the tolerance tests below show it does not, the documented fallback is a dB-domain variant, which is a **format** change and therefore requires a `formatVersion` bump (§18.3) — not a silent reinterpretation.
+>
+> **Stored separately (computed during analysis at full float32 precision, then stored):** RMS, Peak, Energy, Normalized Energy, Loudness Approximation, Spectral Centroid, Spectral Flux, Spectral Rolloff, Spectral Flatness, Chroma, Onset strength, Beat probability, Beat phase, Tempo, and the §20 **default** band set. These are stored rather than derived because computing them from the reduced FP16 spectrum at read time would be both less accurate and more expensive than computing them once from the full-precision spectrum during analysis.
+>
+> **Derived at read time from the retained spectrum (never re-analyzed):**
+> - **Arbitrary/custom frequency bands (§20).** Binding: a custom band **must** be derivable from the retained spectrum **without re-running the FFT and without re-decoding the source**. §22.2's per-frame source deduplication computes each unique custom band once per frame.
+> - **Log spectrum (§17).** A re-binning of the retained linear magnitude spectrum — an axis transform, not new information.
+>
+> **Precision testing (mandatory):** deterministic golden and tolerance tests must establish and document the accepted precision of the FP16 representation, across §119's full fixture set, including the very quiet and clipping cases. The measured tolerances are recorded in `PERFORMANCE.md` and become the thresholds the CI tier (§77.1) enforces.
+>
+> **Size consequence (binding input to §18.3's disk budget):** 1024 bins × 2 bytes × 100 Hz ≈ **200 KiB/s ≈ 11.7 MB per track-minute** for the spectrum, plus roughly 0.7 MB per track-minute for the stored scalars — **≈ 12.4 MB per track-minute**, so a five-minute track costs ≈ **62 MB**. This figure, not an arbitrary round number, is what §18.3's budget is derived from.
+
+#### 17.5 Unresolved: Default FFT Hop / Overlap (Appendix B U-21)
+
+> **[OPEN — U-21]** §17.2 inherits a "50% overlap" default from v2.0 while mandating a 100 Hz storage timeline. With the canonical rate now fixed at 48 kHz (§17.3), the two cannot both be native:
+>
+> - **50% overlap** → 1024-sample hop → **46.875 Hz** native frame rate, which must then be *upsampled* to the 100 Hz storage timeline. Every stored spectrum frame between two computed frames is interpolated rather than measured, and the retained spectrum costs ≈2.13× its own information content (§17.4's size figure is paid in full for data that is partly fabricated).
+> - **480-sample hop** → **exactly 100 Hz** native (76.6% overlap) → every stored frame is a measured frame, and temporal resolution for onset/beat (§21) is 10 ms rather than 21.3 ms.
+>
+> This changes the numerical content of every cache entry and every golden vector, so it must be settled **before** `audio:analysis` and `audio:cache` are implemented. It is deliberately left open rather than resolved by inference. See Appendix B U-21.
 
 ### 18. AUDIO ANALYSIS CACHE
 
@@ -343,6 +397,50 @@ Changing image position MUST NOT invalidate analysis. Changing effect blur MUST 
 > **Concurrency:** `AudioAnalysisCache` is **immutable-once-written and append-only**, randomly readable by timestamp, structured so the render thread can read it **lock-free** (e.g. a versioned array/ring buffer behind an atomic "highest-complete-index" marker) and **never blocks** waiting for analysis to catch up during preview. If analysis for time T is not yet available, the renderer uses the nearest available cached sample and flags the frame in Diagnostics (§98) as "analysis pending" — it never stalls the render thread. During export, the §17.1 precondition guarantees this situation cannot occur.
 >
 > **Storage scope:** the cache is **content-addressed**, keyed by `(assetHash, analysisConfigHash)` — where `assetHash` is the asset's content hash as recorded on its Asset Registry entry (§82's `hash` field), obtained by resolving the project's `audio.assetRef` (§10) through the Asset Registry, never the raw `assetRef` value itself (see §27.2 for the identical rule applied to the Resolved Modulation Cache) — and stored **external to the portable project file** in an app-managed cache directory — never embedded in the JSON project (§10, §81). It is disposable and regenerable: if missing (fresh install, cleared cache, moved project), it is silently regenerated on first use following the §17.1 progressive/priority order. Project backup/export/share bundles (§111) **never** include analysis cache payloads.
+
+#### 18.2 `analysisConfigHash` Membership (Normative)
+
+> **[RESOLVED — P-3]** §18 requires that changing "analysis settings" invalidate analysis data but never enumerated them. This section is that enumeration, and it is normative in both directions.
+>
+> **Governing test:** *if changing an input changes a number stored in the cache, it is in the hash; if it only changes how an already-stored number is consumed, it is not.*
+>
+> **The hash MUST include (minimum, non-exhaustive):**
+> 1. Canonical analysis sample rate (§17.3).
+> 2. Channel policy (§17.3).
+> 3. FFT size (§106).
+> 4. FFT window function.
+> 5. FFT hop / overlap configuration (§17.5, U-21).
+> 6. Analysis frame rate — the §17.2 storage timeline.
+> 7. **Default** frequency-band definitions (§20) — i.e. the band set whose values are *stored*.
+> 8. Normalization algorithm and configuration (§19, §106 "Normalization").
+> 9. Beat-analysis configuration (§21, §106 "Beat detection").
+> 10. Analysis-quality level (§106 "Analysis quality").
+> 11. Analysis algorithm/schema version — covering resampler coefficients, window-function implementation, and any DSP change that alters output for identical input.
+>
+> **The hash MUST NOT include (normative exclusions):**
+> - **Reactive/mapping parameters (§23):** gain, offset, curve, threshold, deadZone, attack, release, smoothing, invert, falloff, clamp, `combineOp`, `beatMultiplier`, `phaseOffset`. These govern consumption, not computation.
+> - **Master Sensitivity and master Smoothing (§106).** Both are consumption-side: raw features are cached, and sensitivity/smoothing are applied at read time. Placing either in the hash would trigger a full re-analysis on a slider nudge, which the governing test forbids.
+> - **User-defined custom bands (§20).** Per §17.4 these are derived from the retained spectrum at read time and change no stored value. Including them would make every new custom band a full re-analysis — the single most user-visible way to get this wrong.
+> - **Trim in/out, gain, fades, mute (§16).** These affect playback and future export only. §9.1 already fixes the analysis epoch at the raw asset's `t=0`, making trim analysis-independent; this states it explicitly.
+> - **Preview quality and render settings (§86), and every keyframe (§41).**
+>
+> This split is what makes §27.2's `audioAnalysisCacheKey` correct: the Resolved Modulation Cache inherits this hash, so an over-broad hash would cascade spurious modulation recomputation, and an under-broad one would serve stale trajectories — the exact defect §27.2 exists to prevent.
+
+#### 18.3 Cache Format Version, Disk Budget, and Eviction
+
+> **[RESOLVED — P-6]**
+>
+> **Format version.** Every cache file carries a `formatVersion` in its header, **independent of `analysisConfigHash`**. The two answer different questions: `analysisConfigHash` identifies *what was computed*; `formatVersion` identifies *how it is laid out on disk*. A reader encountering an unknown or newer `formatVersion` **rejects the file outright, deletes it, and regenerates** — it never attempts a partial or best-effort parse.
+>
+> **Disposability (strengthening §18.1).** The cache is disposable in the strongest sense: **project data never depends on cache presence, and cache eviction can never invalidate, degrade, or alter project state.** Losing the entire cache directory costs time, never work. This is what makes an aggressive eviction policy safe.
+>
+> **Bounded budget.** Default **1 GB**, user-configurable **256 MB – 8 GB**. Derived from §17.4's measured ≈12.4 MB per track-minute: 1 GB ≈ 80 track-minutes ≈ 16 five-minute tracks. The default is stated as a derivation rather than a round number so it can be re-derived if §17.4's representation or U-21's hop changes the per-minute cost.
+>
+> **Deterministic eviction.**
+> - **LRU by last-access timestamp**, evicting **whole `(assetHash, analysisConfigHash)` entries only**. Partial eviction is forbidden: a half-present entry would violate §18.1's immutability and completeness contract.
+> - The entry for any audio asset referenced by a **currently-open project is never evicted** while that project is open.
+> - Eviction is idempotent and safe to interrupt; an interrupted eviction leaves only whole entries.
+> - OS low-storage signals are honored in addition to the budget. This is disk pressure and is distinct from §98.1's memory-pressure response, which releases resident pages without deleting files.
 
 ### 19. AUDIO NORMALIZATION
 
@@ -874,6 +972,8 @@ Command-based. Commands: `AddLayer, DeleteLayer, MoveLayer, SetParameter, AddEff
 >
 > - **Undo coalescing:** any sequence of `SetParameter` commands on the **same parameter path**, with no intervening command of a different type, occurring within a short debounce window (default 400ms of inactivity ends the coalescing group), merges into a single undo step. This generalizes "continuous gesture" (a drag) to any rapid same-target edits (repeated slider nudges, taps), giving uniform, predictable undo granularity.
 > - **Commands double as the ProjectState→RenderGraph diff protocol:** the Renderer maintains a **derived `RenderGraph`** (a compiled, GPU-resource-bound representation, §8) that is **never rebuilt wholesale** except on project load — it is incrementally updated via the same Command stream that drives Undo/Redo. Every Command type (`AddLayer`, `SetParameter`, etc.) has a corresponding, well-defined RenderGraph patch operation. This is why Commands must be designed as a first-class, complete data model from Phase 1 — they are not merely a UI convenience feature bolted on later.
+>
+> **Scope guard for Phase 1.** "First-class from Phase 1" means the Command data model, its apply/invert contract, the in-memory undo stack, and the coalescing policy above exist and are tested in Phase 1. It does **not** authorize building, in Phase 1, any of: timeline editing (§134/Phase 6), the RenderGraph or any renderer (§130/Phase 2), reactive evaluation (§131/Phase 3), or product UI (§103). The Command model existing early is what lets those phases attach to it without a rewrite; it is not a licence to start them.
 
 ### 86. PREVIEW
 
@@ -1200,7 +1300,13 @@ Audio: import, decode, playback, waveform, trim, analysis, cache.
 
 > Per §20.O of the Review: also establishes `core/model`, the module dependency-boundary CI check (§116.1), DI setup, and the Coordinate/Color/Clock decisions (§13.1, §90.1, §14.1) as testable primitives **before any UI is built**.
 >
-> **Blocked by:** none remaining as hard blockers. U-1 (DI framework) and U-2 (minimum Android API level) are **RESOLVED** — Hilt; API 35 (Android 15) minimum, `compileSdk`/`targetSdk` 36 — see §6.1 and Appendix B. U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist. **Phase 1 has no unresolved hard blockers.**
+> **Mandatory Phase 1 deliverables, stated explicitly so they cannot be read as optional:**
+> - **Coordinate (§13.1), Color (§90.1), and Clock (§14.1) implemented as testable primitives** — pure functions with unit tests (logical-unit conversion and `pixelsPerLogicalUnit`; sRGB↔linear conversion; the `TimelineTime`/`AudioSourceTime` domains and `TrimMapping`). Two of the three are renderer-facing, and no renderer exists in Phase 1 — they are still required here, precisely so Phase 2 inherits them already proven rather than inventing them under deadline.
+> - **The §85.1 Command data model as a first-class citizen**, subject to §85.1's scope guard: the model, not the timeline, renderer, reactive evaluation, or product UI.
+> - The §116.1 module dependency-boundary check, landing **before** other Phase 1 code.
+> - The canonical analysis contracts ratified in §17.3, §17.4, §18.2, and §18.3.
+>
+> **Blocked by:** U-1 (DI framework) and U-2 (minimum Android API level) are **RESOLVED** — Hilt; API 35 (Android 15) minimum, `compileSdk`/`targetSdk` 36 — see §6.1 and Appendix B. U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist. **U-21 (default FFT hop, §17.5) is open and blocks only the `audio:analysis` and `audio:cache` work within this phase** — it changes cached numerical content and golden vectors, so it must be settled before those two modules are implemented. It does not block the foundation work (build/CI, `core:*`, assets, decoder, waveform peaks, playback).
 
 ### 130. PHASE 2
 
@@ -1476,5 +1582,8 @@ Everything above is now **ratified, binding specification text** — it is not a
 | U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | Project Owner | OPEN | N/A (explicitly deferred; confirm deferral stands) |
 | U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | Project Owner | OPEN | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
 | U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Project Owner | OPEN | Phase 7, before UI-schema-generation work begins |
+| U-21 | **Default FFT hop / overlap (§17.5).** §17.2 inherits a "50% overlap" default while mandating a 100 Hz storage timeline; with the canonical rate fixed at 48 kHz (§17.3) these are arithmetically distinct — 50% overlap gives a 46.875 Hz native frame rate that must be upsampled to 100 Hz (storing partly-interpolated spectra at ≈2.13× their information content), whereas a 480-sample hop gives exactly 100 Hz native at 76.6% overlap with 10 ms onset/beat resolution. Surfaced by the P-1…P-6 ratification pass, which made the arithmetic explicit. | DSP/analysis decision; changes cached numerical content and every golden vector | Project Owner | OPEN | **Phase 1 — blocks `audio:analysis` and `audio:cache` only; does not block build/CI, `core:*`, assets, decoder, waveform peaks, or playback** |
 
-**Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred. **U-1 and U-2 are now resolved (§6.1); every other open item either targets a phase later than Phase 1 or, for U-5, is explicitly non-blocking to Phase 1's start (§129). Phase 1 has no unresolved hard blockers.**
+**Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred. **U-1 and U-2 are resolved (§6.1). U-5 is explicitly non-blocking to Phase 1's start (§129). U-21 is open and scoped: it blocks the `audio:analysis` and `audio:cache` modules within Phase 1, and nothing else (§17.5, §129). Every remaining open item targets a phase later than Phase 1.**
+
+**Decisions incorporated directly as normative text rather than as Appendix B items:** the P-1…P-6 ratification pass resolved channel policy and canonical sample rate (§17.3), retained spectrum representation (§17.4), `analysisConfigHash` membership (§18.2), cache format version / disk budget / eviction (§18.3), and the scope of §14.1's translation rule (P-5). These are resolved, so they belong in the normative body, not in a register of unresolved decisions. Only the one decision that genuinely remained open after that pass — U-21 — was added here.

@@ -5,7 +5,10 @@
 **Gate:** FINAL_ARCHITECTURE_GATE.md — GO FOR PHASE 1 (U-1 = Hilt, U-2 = minSdk 35 / compileSdk 36 / targetSdk 36).
 **Prime directive (§159):** this plan builds the production Audio Engine that Phases 2–11 sit on top of. Nothing here is a prototype to be replaced later.
 
-> **READ THIS FIRST — §17 of this plan lists six genuinely unspecified decisions that must be ratified before coding begins.** Four of them (P-1 … P-4) determine the on-disk analysis-cache format and the analyzer contract. Deciding them after code exists means rewriting the cache format and re-cutting every golden vector — exactly the "hack stack" §123 forbids. This plan does **not** invent answers to them.
+> **UPDATE — P-1 … P-6 have been RESOLVED and ratified into the specification.** See §17 of this plan for their dispositions and the one residual item they exposed (U-21, default FFT hop). The plan below is otherwise unchanged and remains the approved approach.
+>
+> - **P-1 → §17.3** (canonical mono analysis signal) · **P-2 → §17.3** (48 kHz canonical rate) · **P-3 → §18.2** (`analysisConfigHash` membership) · **P-4 → §17.4** (1024 bins / FP16 / 100 Hz) · **P-5 → §14.1** (translation-scope clarification) · **P-6 → §18.3** (formatVersion, 1 GB budget, LRU eviction)
+> - **U-21 (new, OPEN):** default FFT hop / overlap — blocks `audio:analysis` and `audio:cache` only. See §17.5 of the specification.
 
 ---
 
@@ -400,11 +403,22 @@ Two budgets have no specified number. Rather than invent them, Phase 1 establish
 
 ---
 
-## 17. STOP — Unspecified Decisions Blocking Phase 1
+## 17. Unspecified Decisions — RESOLVED (and the one residual item)
 
-Per the standing rule ("if something required by Phase 1 is genuinely unspecified, STOP and identify it explicitly instead of inventing behavior"), these are **not** answered in this plan. **P-1 … P-4 are blocking** — each one changes the analyzer contract or the on-disk cache format, so deciding them after code exists forces a rewrite and re-cutting of every golden vector.
+All six were ratified by the Project Owner and incorporated as **normative specification text**, not as Appendix B register entries — they are resolved, so they belong in the body rather than in a register of unresolved decisions. Dispositions:
 
-Recommend adopting them as Appendix B items **U-21 … U-26** (Owner: Project Owner; Blocks: Phase 1 for P-1…P-4), following the same mechanism the audits used to add U-19/U-20.
+| ID | Disposition | Ratified as |
+|---|---|---|
+| **P-1** Channel handling | **RESOLVED** — canonical **mono** analysis signal; stereo `0.5·L + 0.5·R`; source channel count/layout preserved; playback and export use the original source, never the mono signal | §17.3 |
+| **P-2** Canonical sample rate | **RESOLVED** — **48,000 Hz**; deterministic software resampler, never platform/hardware resampling; window duration fixed at 2048/48000 s | §17.3 |
+| **P-3** `analysisConfigHash` membership | **RESOLVED** — normative inclusion list (11 items) **and** normative exclusion list, governed by an explicit test: *if it changes a stored number it is in the hash; if it only changes consumption it is not* | §18.2 |
+| **P-4** FFT retention | **RESOLVED** — 1024 magnitude bins (bins 1…1024 of the 2048-point FFT, DC discarded), 100 Hz, FP16; custom bands derived from the retained spectrum without re-FFT or re-decode; ≈12.4 MB per track-minute | §17.4 |
+| **P-5** §14.1 translation scope | **RESOLVED** — "nowhere else" governs the render/parameter-resolution pipeline; Trim Editor display conversion is expected and permitted | §14.1 |
+| **P-6** Cache format & disk policy | **RESOLVED** — `formatVersion` independent of `analysisConfigHash`; unknown version → reject + regenerate; **1 GB** default budget (configurable 256 MB – 8 GB); deterministic LRU, whole-entry eviction; open project's entry protected | §18.3 |
+
+**Residual item exposed by the ratification — U-21 (OPEN):** fixing the canonical rate at 48 kHz made an arithmetic tension in §17.2 explicit. A 2048-sample window at the inherited "50% overlap" default yields a **46.875 Hz** native frame rate, which is not the mandated 100 Hz storage rate. Either the spectrum is upsampled (storing partly-interpolated frames at ≈2.13× their information content), or the hop is 480 samples for exactly 100 Hz native at 76.6% overlap and 10 ms onset/beat resolution. This changes cached numerical content and every golden vector.
+
+**U-21 blocks `audio:analysis` and `audio:cache` only** (build steps 8–10). It does not block steps 1–7: build/CI, `core:*`, assets, decoder, waveform peaks, playback.
 
 | ID | Unspecified decision | Why Phase 1 cannot proceed without it | Spec basis |
 |---|---|---|---|
