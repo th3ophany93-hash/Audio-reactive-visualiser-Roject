@@ -18,6 +18,23 @@ import org.junit.Test
  * smoothing, custom bands, trim, and keyframes cannot alter the hash because they are not
  * fields of [AnalysisConfig] at all. [hashed fields are exactly the §18.2 inclusion list]
  * is what stops one being added later.
+ *
+ * ---
+ * **CARRIED-FORWARD TEST OBLIGATION — required before this file is next modified.**
+ *
+ * The structural argument above is sound but implicit: it holds only because nobody has yet
+ * added an excluded concept as a field of [AnalysisConfig]. The inclusion half is asserted
+ * directly; the exclusion half is not asserted at all, so the day someone adds
+ * `masterSensitivity` to the config the inclusion test fails with a message about the
+ * inclusion list rather than about the §18.2 exclusion it actually violates.
+ *
+ * Required addition: an explicit exclusion-half test that enumerates §18.2's named
+ * exclusions — reactive mapping parameters, master sensitivity, master smoothing, custom
+ * (non-default) band definitions, trim points, keyframes — and asserts that none of them
+ * appears among [AnalysisConfig]'s declared properties, with the failure message naming
+ * §18.2's exclusion rule. Recorded as a standing obligation by the project owner
+ * (Phase 1, Step 3); see PHASE_1_IMPLEMENTATION_PLAN.md §18.
+ * ---
  */
 class AnalysisConfigMembershipTest {
 

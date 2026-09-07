@@ -75,7 +75,7 @@ All new; nothing to modify (empty repository).
 |---|---|---|---|
 | `core:model` | Kotlin JVM library | No | §10, §11, §13.1, §90.1, §97 |
 | `core:time` | Kotlin JVM library | No | §9.1, §14.1, §17.2 |
-| `core:diagnostics` | Android library | Yes (Log, ComponentCallbacks2) | §97, §98, §98.1, §99, §100.1 |
+| `core:diagnostics` | Kotlin JVM library *(revised in Step 1 — see note)* | No | §97, §98, §98.1, §99, §100.1 |
 | `core:assets` | Android library | Yes (SAF, DocumentFile) | §82, §82.1 |
 | `core:project` | Kotlin JVM library | No | §10, §85, §85.1, §102, §102.1 |
 | `audio:decoder` | Android library | Yes (MediaCodec/Media3) | §7, §15 |
@@ -87,6 +87,9 @@ All new; nothing to modify (empty repository).
 | `testing:audio` | Test fixtures library | No | §119 |
 | `testing:golden` | Test harness library | No | §77.1, §120.1 |
 | `testing:performance` | Test harness library | Yes | §87, §121 |
+
+> **Revision (Step 1, implemented Step 3) — `core:diagnostics` is a Kotlin JVM library, not an Android library.**
+> The plan originally typed it Android because §98.1 names `ComponentCallbacks2.onTrimMemory` and §99 implies `android.util.Log`. Building it that way turned out to poison every pure-JVM module that needs logging: an Android AAR cannot be consumed by a JVM module, and `audio:analysis`, `audio:cache`, `audio:beat` and `core:project` all sit downstream of it in §116.1's graph. Rather than make the DSP modules Android-dependent — which would have cost them JVM unit-testability for the sake of two platform symbols — the module was made platform-neutral, with `android.util.Log` supplied as a `LogSink` and `ComponentCallbacks2` levels translated into `MemoryPressureLevel`, both installed by `:app` at the composition root (§157.1's "injected, not reached for"). §98.1 and §99 are satisfied in full; only the location of the two Android bindings changed. Enforced by the `pureKotlinModules` guard in the root build script.
 
 **Build configuration (§6.1):** `minSdk 35`, `compileSdk 36`, `targetSdk 36`, Kotlin, Hilt, Compose (dependency present for the debug harness only).
 
@@ -438,6 +441,19 @@ Overlap (76.5625%) is derived, never an input; the inherited "50% overlap" figur
 | **P-6** *(clarification, low risk)* | **Cache `formatVersion` and disk-eviction policy** — §18.1 mandates content-addressing and regenerability but specifies neither a layout-version field nor a disk budget/eviction rule for the app-managed cache directory. §98.1 covers *memory* pressure only | Prevents unbounded cache growth on device and enables safe format evolution | §18.1, §98.1 |
 
 **Recommendation:** ratify P-1 … P-4 (and ideally P-5, P-6) before implementation begins. I have deliberately not chosen defaults for any of them.
+
+---
+
+## 18. Carried-Forward Test Obligations
+
+Obligations recorded during implementation that are **not** yet discharged. Each names the
+file that must carry it and the trigger that makes it due. They are recorded here so they
+survive a context boundary, and mirrored as a comment in the file itself so they survive a
+reader who never opens this document.
+
+| # | Obligation | File | Due |
+|---|---|---|---|
+| T-1 | **§18.2 exclusion-half membership test.** `AnalysisConfigMembershipTest` asserts the inclusion list directly but leaves the exclusion half implicit — it holds only because no excluded concept has yet been added as a field of `AnalysisConfig`. Add a test that enumerates §18.2's named exclusions (reactive mapping parameters, master sensitivity, master smoothing, custom band definitions, trim points, keyframes) and asserts none appears among `AnalysisConfig`'s declared properties, failing with a message that names the §18.2 exclusion rule rather than the inclusion list. | `core/model/src/test/kotlin/com/arvs/core/model/AnalysisConfigMembershipTest.kt` | Before that test surface is next modified (Project Owner, Step 3) |
 
 ---
 
