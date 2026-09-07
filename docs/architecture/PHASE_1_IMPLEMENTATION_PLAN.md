@@ -8,7 +8,7 @@
 > **UPDATE — P-1 … P-6 have been RESOLVED and ratified into the specification.** See §17 of this plan for their dispositions and the one residual item they exposed (U-21, default FFT hop). The plan below is otherwise unchanged and remains the approved approach.
 >
 > - **P-1 → §17.3** (canonical mono analysis signal) · **P-2 → §17.3** (48 kHz canonical rate) · **P-3 → §18.2** (`analysisConfigHash` membership) · **P-4 → §17.4** (1024 bins / FP16 / 100 Hz) · **P-5 → §14.1** (translation-scope clarification) · **P-6 → §18.3** (formatVersion, 1 GB budget, LRU eviction)
-> - **U-21 (new, OPEN):** default FFT hop / overlap — blocks `audio:analysis` and `audio:cache` only. See §17.5 of the specification.
+> - **U-21 → §17.5 (RESOLVED):** FFT window 2048 samples · analysis hop **480 samples** · native frame rate exactly **100 Hz**. Overlap 76.5625% is derived, never an input; "50% overlap" is superseded. Spectral frames are measured, never interpolated to reach the storage rate. **Phase 1 has no remaining blockers — all ten build steps are cleared.**
 
 ---
 
@@ -416,9 +416,17 @@ All six were ratified by the Project Owner and incorporated as **normative speci
 | **P-5** §14.1 translation scope | **RESOLVED** — "nowhere else" governs the render/parameter-resolution pipeline; Trim Editor display conversion is expected and permitted | §14.1 |
 | **P-6** Cache format & disk policy | **RESOLVED** — `formatVersion` independent of `analysisConfigHash`; unknown version → reject + regenerate; **1 GB** default budget (configurable 256 MB – 8 GB); deterministic LRU, whole-entry eviction; open project's entry protected | §18.3 |
 
-**Residual item exposed by the ratification — U-21 (OPEN):** fixing the canonical rate at 48 kHz made an arithmetic tension in §17.2 explicit. A 2048-sample window at the inherited "50% overlap" default yields a **46.875 Hz** native frame rate, which is not the mandated 100 Hz storage rate. Either the spectrum is upsampled (storing partly-interpolated frames at ≈2.13× their information content), or the hop is 480 samples for exactly 100 Hz native at 76.6% overlap and 10 ms onset/beat resolution. This changes cached numerical content and every golden vector.
+**U-21 — also RESOLVED (§17.5).** Fixing the canonical rate at 48 kHz made an arithmetic tension in §17.2 explicit, which has since been ratified as three distinct quantities that must never be conflated:
 
-**U-21 blocks `audio:analysis` and `audio:cache` only** (build steps 8–10). It does not block steps 1–7: build/CI, `core:*`, assets, decoder, waveform peaks, playback.
+| Quantity | Canonical value |
+|---|---|
+| FFT window size | **2048 samples** (≈42.667 ms; 23.4375 Hz bins) |
+| Analysis hop | **480 samples** (10 ms exactly) |
+| Native analysis frame rate | **100 Hz** (`48000/480`) |
+
+Overlap (76.5625%) is derived, never an input; the inherited "50% overlap" figure is superseded. Because native rate equals storage rate, spectral frames are written one-for-one as **measured** frames and are never interpolated or upsampled. Frame `n` covers samples `[n·480, n·480 + 2048)`, anchored at its window **start**, stored at `n · 10 ms` from the §9.1 epoch; `N = ceil(totalSamples / 480)` with zero-padded tail windows.
+
+**No Phase 1 blockers remain. All ten build steps are cleared.**
 
 | ID | Unspecified decision | Why Phase 1 cannot proceed without it | Spec basis |
 |---|---|---|---|

@@ -1,6 +1,6 @@
 # FINAL PHASE 1 GATE
 
-**Purpose:** Record the ratification of P-1 … P-6, the residual item that ratification exposed, and the final Phase 1 verdict.
+**Purpose:** Record the ratification of P-1 … P-6 **and U-21**, and the final Phase 1 verdict.
 **Subject:** `MASTER_SPECIFICATION_v3.0.md` as amended in this pass, verified by direct inspection — not by assuming the edits landed.
 **Scope discipline:** documentation only. No application code, no Gradle, no Android project, no scaffolding was created.
 
@@ -16,31 +16,38 @@
 | **P-4 — FFT retention** | ✅ **RESOLVED** | §17.4 | 1024 magnitude bins, 100 Hz, FP16. Concrete bin mapping specified (bins 1…1024 of the 2048-point FFT; DC discarded). Scalars computed at full float32 during analysis and stored. Custom bands and log spectrum derived at read time — **never** re-running the FFT or re-decoding. Precision tolerance tests mandatory. Measured cost ≈**12.4 MB per track-minute** (≈62 MB per five-minute track). |
 | **P-5 — §14.1 wording** | ✅ **RESOLVED** | §14.1 | "Translated exactly once … and nowhere else" governs the **render/parameter-resolution pipeline**. Trim Editor display-space conversion is expected and permitted. An editor converting to draw a waveform is not a violation; a renderer or plugin applying `trimIn` inside the parameter pipeline is. |
 | **P-6 — Cache format & disk policy** | ✅ **RESOLVED** | §18.3 | `formatVersion` **independent** of `analysisConfigHash` (what-was-computed vs how-it-is-laid-out); unknown/newer version → reject, delete, regenerate, never partial-parse. Cache disposable; project state never depends on cache presence and eviction can never invalidate it. Budget **1 GB default**, configurable 256 MB – 8 GB, derived from §17.4's measured per-minute cost. Deterministic **LRU by last access, whole entries only**; open project's entry protected; OS low-storage signals honored. |
+| **U-21 — Canonical analysis hop** | ✅ **RESOLVED** | §17.5 | **FFT window 2048 samples · analysis hop 480 samples · native frame rate exactly 100 Hz** at the §17.3 canonical 48 kHz. Overlap 76.5625% is *derived*, never an input. The v2.0 "50% overlap" figure is **superseded** and must not be cited as canonical. Spectral frames are measured at the storage rate and **never interpolated or upsampled** to reach it. |
 | **U-1 — DI framework** | ✅ **RESOLVED** (prior pass) | §6, §6.1 | **Hilt** |
 | **U-2 — Minimum Android API** | ✅ **RESOLVED** (prior pass) | §6, §6.1 | **minSdk 35 / compileSdk 36 / targetSdk 36** |
 
-**No conflict was found between P-1, P-2, P-3, P-5, P-6 and any existing normative requirement.** P-4's "1024 bins" is arithmetically consistent with §17.2's 2048-sample window (a 2048-point real FFT yields 1025 unique bins; retaining 1024 discards DC). **One conflict was found and is reported rather than resolved — see §B.**
+**No conflict was found between P-1, P-2, P-3, P-5, P-6 and any existing normative requirement.** P-4's "1024 bins" is arithmetically consistent with §17.2's 2048-sample window (a 2048-point real FFT yields 1025 unique bins; retaining 1024 discards DC). One conflict was found during that pass, reported rather than silently resolved, and **has since been ratified as U-21 — see §B.**
 
-**No Appendix B items U-22 … U-26 were created.** Per your instruction, resolved decisions were incorporated directly as normative specification text; a register of *unresolved* decisions is the wrong home for settled ones. Only the single genuinely-open item (U-21) was added.
+**No Appendix B items U-22 … U-26 were created.** Per your instruction, resolved decisions were incorporated directly as normative specification text; a register of *unresolved* decisions is the wrong home for settled ones. Only the single genuinely-open item (U-21) was added — and it is now resolved, leaving Phase 1 with no open Appendix B item of any kind.
 
 ---
 
-## B. Conflict Found and NOT Silently Resolved — U-21
+## B. The Conflict Reported Last Pass — Now Resolved (U-21)
 
-Fixing the canonical rate at 48 kHz (P-2) made an arithmetic tension inside §17.2 explicit. §17.2 simultaneously carries an inherited **"50% overlap"** FFT default and mandates a **100 Hz** storage timeline. At 48 kHz those are not the same thing:
+Fixing the canonical rate at 48 kHz made an arithmetic tension in §17.2 explicit: the inherited **"50% overlap"** default and the mandated **100 Hz** storage timeline could not both be native. That conflict was reported rather than silently resolved. It has now been ratified:
 
-| Option | Native frame rate | Consequence |
+**Canonical framing — three distinct quantities, never conflated (§17.5):**
+
+| Quantity | Canonical value | Nature |
 |---|---|---|
-| **50% overlap** (1024-sample hop) — the literal inherited default | **46.875 Hz** | Must be *upsampled* to the mandated 100 Hz. Every stored spectrum frame between two computed frames is interpolated rather than measured, and the retained spectrum costs ≈**2.13× its own information content** — P-4's full storage price paid for partly-fabricated data. Onset/beat temporal resolution 21.3 ms. |
-| **480-sample hop** (76.6% overlap) | **exactly 100 Hz** | Every stored frame is a measured frame. Onset/beat resolution 10 ms — materially tighter audio-reactive sync, which is this product's core value (§2). |
+| FFT window size | **2048 samples** (≈42.667 ms, 23.4375 Hz bins) | Unchanged input |
+| Analysis hop | **480 samples** (10 ms exactly) | Input — canonical |
+| Native analysis frame rate | **100 Hz** (`48000/480`) | Consequence of the two above |
 
-This is load-bearing: it changes the numerical content of every cache entry and every golden vector, and P-3 itself lists "FFT/hop configuration" and "analysis frame rate" as *separate* hash members, confirming they are distinct inputs. Deciding it after `audio:analysis` exists means re-cutting every golden vector.
+Window overlap is `(2048 − 480)/2048 = 76.5625%` — **derived, never an input**. The v2.0 "50% overlap" figure is superseded and must not be retained, cited, or assumed anywhere.
 
-**Recorded as Appendix B U-21, OPEN.** Recommendation: the 480-sample hop, on the grounds that storing measured rather than interpolated spectra is both cheaper in information terms and better for the beat-sync quality the product is built around — but this is stated as a recommendation, not applied.
+**Binding consequence:** because the native rate equals the storage rate, FFT-derived frames are written one-for-one as **measured** frames. Spectral frames are never interpolated or upsampled to satisfy the 100 Hz timeline. §17.2's resample/align rule still governs features whose own native rate differs (e.g. a tempo estimate over a longer window) and is explicitly inapplicable to the FFT path.
 
-**Blast radius is scoped, not phase-wide:** U-21 blocks `audio:analysis` and `audio:cache` (build steps 8–10). It does **not** block build/CI, `core:model`, `core:time`, `core:diagnostics`, `core:assets`, `audio:decoder`, the waveform peak cache, or `audio:playback` (steps 1–7).
+**Derived framing consequences, recorded so they are specified rather than assumed:**
+- **Frame anchoring is the window START.** Frame `n` covers samples `[n·480, n·480 + 2048)` and is stored at `n · 10 ms` from the §9.1 epoch. Centre-anchoring would place frames at `n·10 ms + 21.333 ms`, never landing on the 10 ms grid — reintroducing exactly the interpolation the ratification forbids. Start-anchoring is forced, not chosen.
+- **Tail handling:** `N = ceil(totalSamples / 480)` frames, final windows zero-padded, making `N` a pure function of asset length.
+- **Onset/beat temporal resolution is 10 ms**, not 21.3 ms.
 
----
+**Cache identity:** hop is an `analysisConfigHash` input in its own right (§18.2 item 5), independent of FFT size and frame rate.
 
 ## C. Mandatory Phase 1 Requirements Incorporated
 
@@ -53,56 +60,56 @@ This is load-bearing: it changes the numerical content of every cache entry and 
 
 ## D. Audit Results
 
-All audits re-run against the amended file by direct inspection.
+All audits re-run against the amended file by direct inspection after the U-21 ratification.
 
 | # | Audit | Result |
 |---|---|---|
-| 1 | **Consistency** | ✅ Clean. New sections §17.3, §17.4, §17.5, §18.2, §18.3 sit in correct numeric order between their parents; no contradiction introduced with §17.2, §18, §18.1, §19, §20, §22.2, §27.2, §98.1, §106, or §119. |
-| 2 | **Cross-reference** | ✅ Clean. All `AR-#.#` references in range `AR-1.1`–`AR-19.5`; zero invalid; `AR-58` absent. All 24 `item U-#` citations resolve to correct rows, including the four new ones (§17.2→U-21, §17.5, §18.2→U-21, §129→U-21). |
-| 3 | **Stale / TBD / implementation-defined** | ✅ **Zero matches** for `TBD`, `to be decided`, `implementation-defined`, `will be specified later`, `can be chosen during implementation`, `defined at implementation time`, `decide later`. The previously-sole match (inside U-19's self-describing row) no longer trips the scan. |
-| 4 | **Appendix B gate** | ✅ 21 rows, 6 columns, header/separator/rows all consistent. U-1 and U-2 `RESOLVED`; U-3…U-21 `OPEN` with owner and target phase recorded. §128's owner+target-phase clause satisfied for every row. |
-| 5 | **Original 11 findings** | ✅ **All 11 still fixed** — individually re-verified (U-12 citation; no false Appendix-A schema pointer; 4-part cache key; U-19 hard gate; no `§18.3` bogus ref; `AR-14.1 (Review)` form; NETWORK removal; AR-1.4/5.2 marked N; bracket tags at §38/§40/§57; `plugins/system` split; U-20 gate). |
-| 6 | **N1–N7** | ✅ **All 7 still fixed** — `AR-58` gone and replaced by a `[NOTED]` tag; Owner column populated 21/21; §74 ABI caveat present; `assetRef`→`assetHash` indirection present at **both** §18.1 and §27.2 and consistent; no `~~NETWORK~~` in a code span; 5/5 `Blocked by:` lines; `ProjectState`/`RendererState` normalized. |
-| 7 | **New CRITICAL / HIGH findings** | ✅ **None.** The one finding raised (U-21) is a scoped, recorded, MEDIUM-HIGH open decision, not a defect in the amended text. |
-| 8 | **Phase 1 load-bearing decisions** | ⚠️ **One remains: U-21**, scoped to `audio:analysis` + `audio:cache`. Everything else Phase 1 needs is now specified. |
-| 9 | **No competing disk budget** | ✅ Verified — §18.3 is the only disk budget in the document; nothing pre-existing was overridden. |
+| 1 | **Consistency** | ✅ Clean. §17.3, §17.4, §17.5, §18.2, §18.3 in correct numeric order; no contradiction with §17.2, §18, §18.1, §19, §20, §22.2, §27.2, §98.1, §106, §119. The three framing quantities (window / hop / frame rate) are stated distinctly and consistently everywhere they appear. |
+| 2 | **Superseded "50% overlap"** | ✅ Three remaining occurrences, all explicitly historical — §17.2's note, §17.5's derivation, and U-21's row. **None presents it as canonical.** |
+| 3 | **Cross-reference** | ✅ Clean. All `AR-#.#` in range `AR-1.1`–`AR-19.5`; zero invalid; `AR-58` absent. All `item U-#` citations resolve correctly. §17.5 referenced from 9 sites, all coherent. |
+| 4 | **Stale / TBD / implementation-defined** | ✅ **Zero matches.** |
+| 5 | **Appendix B gate** | ✅ 21 rows, 6 columns, uniform structure. U-1, U-2, U-21 `RESOLVED`; U-3…U-20 `OPEN` with owner and target phase. §128's owner + target-phase clause satisfied for every row. |
+| 6 | **Regression — original 11 findings** | ✅ **All 11 still fixed**, individually re-verified. |
+| 7 | **Regression — N1–N7** | ✅ **All 7 still fixed**, individually re-verified (incl. Owner column 21/21, both `assetRef`→`assetHash` sites, 5/5 `Blocked by:` lines). |
+| 8 | **New CRITICAL / HIGH findings** | ✅ **None.** |
+| 9 | **Phase 1 load-bearing decisions** | ✅ **None remaining.** §129 now reads "Blocked by: nothing." |
 
 ---
 
 ## E. Phase 1 GO / NO-GO
 
-# GO FOR PHASE 1 — with one scoped hold
+# GO FOR PHASE 1 — UNCONDITIONAL
 
-**Cleared to start immediately (build steps 1–7):**
-1. Gradle skeleton, Hilt, minSdk 35 / compileSdk 36 / targetSdk 36, **§116.1 module dependency-boundary CI check first**
-2. `core:model`, `core:time` (+ §13.1 coordinate and §90.1 color primitives with tests)
-3. `core:diagnostics`
-4. `core:assets` (import, SHA-256 hashing, SAF, missing-asset path, three-tier cache scaffolding)
-5. `audio:decoder` + format tests; `testing:audio` fixtures (§119)
-6. Derived preview cache — waveform peak pyramid
-7. `audio:playback` + master clock + underrun assertions
+No scoped hold remains. All ten build steps are cleared:
 
-**On hold pending U-21 (build steps 8–10):** `audio:analysis`, `audio:cache`, `audio:beat`, and every golden analysis vector.
-
-U-21 is a single question with two candidate answers and a stated recommendation; it does not require further investigation, only a decision.
+| Step | Work | Status |
+|---|---|---|
+| 1 | Gradle skeleton, Hilt, minSdk 35 / compileSdk 36 / targetSdk 36, **§116.1 boundary check first** | Cleared |
+| 2 | `core:model`, `core:time` (+ §13.1 coordinate, §90.1 color primitives) | Cleared |
+| 3 | `core:diagnostics` | Cleared |
+| 4 | `core:assets` (import, SHA-256, SAF, missing-asset, cache tiers) | Cleared |
+| 5 | `audio:decoder` + `testing:audio` fixtures (§119) | Cleared |
+| 6 | Derived preview cache — waveform peak pyramid | Cleared |
+| 7 | `audio:playback` + master clock + underrun assertions | Cleared |
+| 8 | `audio:analysis` stages 1–2 | **Cleared by U-21** |
+| 9 | `audio:cache` + determinism suite | **Cleared by U-21** |
+| 10 | `audio:analysis` stages 3–5, `audio:beat` | **Cleared by U-21** |
 
 ---
 
 ## F. Remaining Architectural Decisions That Could Force a Rewrite After Phase 1 Begins
 
-Stated plainly, because this is the question that matters:
-
-| Decision | Rewrite risk if deferred | Mitigation |
+| Decision | Rewrite risk | Mitigation |
 |---|---|---|
-| **U-21 — FFT hop** | **HIGH, and immediate.** Changes every cached value and every golden vector. This is the only open item that can force Phase 1 rework. | Decide before build step 8. Steps 1–7 are unaffected. |
-| **FP16 precision at very low amplitude (§17.4)** | **MEDIUM.** If §119's "very quiet signal" fixture shows FP16 linear magnitude loses too much precision, the documented fallback is a dB-domain variant — a **format** change requiring a `formatVersion` bump. | Already anticipated in §17.4 with a defined fallback and a `formatVersion` mechanism; contained by design rather than open-ended. Measured in Phase 1's precision tests. |
-| **U-5 — SSIM thresholds** | LOW. Empirical values, refined once real renders exist; no structural dependency. | Explicitly non-blocking per §129. |
-| **U-9 / U-11 — GPU and CPU budget numbers** | LOW for Phase 1. Provisional values are permitted and Phase 1 has no renderer. | Baselines established in Phase 1, finalized Phase 3/10. |
-| **U-19 — WASM host ABI** | HIGH **for Phase 7**, zero for Phase 1. | Already a hard gate at §57/§135; Phase 1 builds nothing that depends on it. |
-| **Multichannel (>2 ch) downmix generalization (§17.3)** | LOW. Flagged in the text as a derived generalization rather than an independent ratification, so it is visible and overridable. Affects only sources with more than two channels. | Named explicitly in §17.3; override costs a `formatVersion` bump at worst. |
+| **U-21 — FFT hop** | ✅ **ELIMINATED.** Ratified as 480 samples; every dependent reference, hash input, cache-identity clause, and golden-vector definition updated in the same pass. | Closed. |
+| **FP16 precision at very low amplitude (§17.4)** | **MEDIUM — the only remaining item that could change the cache format.** If §119's "very quiet signal" fixture shows FP16 linear magnitude loses too much precision, the documented fallback is a dB-domain variant, which is a `formatVersion` bump. | Anticipated in §17.4 with a defined fallback and an existing version mechanism — bounded, not open-ended. Measured early, in Phase 1's precision tests. |
+| **U-5 — SSIM thresholds** | LOW. Empirical, no structural dependency. | Explicitly non-blocking (§129). |
+| **U-9 / U-11 — GPU and CPU budget numbers** | LOW for Phase 1 — no renderer exists. | Provisional values permitted; baselines set in Phase 1. |
+| **U-19 — WASM host ABI** | HIGH for **Phase 7**, zero for Phase 1. | Hard-gated at §57/§135; Phase 1 builds nothing depending on it. |
+| **Multichannel (>2 ch) downmix generalization (§17.3)** | LOW. Flagged in-text as a derived generalization, visible and overridable; affects only >2-channel sources. | Override costs a `formatVersion` bump at worst. |
 
-Nothing else in the specification is capable of forcing a Phase 1 rewrite. The cache identity model (§18.2), format versioning (§18.3), determinism epoch (§9.1), and time-domain contract (§14.1) are now all fully specified, which is what makes the remaining risk this small.
+**Nothing else in the specification is capable of forcing a Phase 1 rewrite.** Cache identity (§18.2), format versioning (§18.3), analysis framing (§17.5), determinism epoch (§9.1), and the time-domain contract (§14.1) are now all fully specified.
 
 ---
 
-*No application code, Gradle configuration, or Android project scaffolding was created in the production of this document.*
+*This document records the state at which Phase 1 implementation was authorized to begin.*

@@ -331,7 +331,7 @@ Custom: Arbitrary frequency band.
 
 > **[RATIFIED — Ref AR-2.6]** New, mandatory requirement: the `AudioAnalysisCache` (§18) stores all derived features on a **common fixed timeline at 100Hz (10ms hop)**. The underlying FFT window size is independently configurable (§106, "FFT size," default 2048 samples — see §17.3 for the ratified canonical sample rate that fixes this window's temporal duration) but every feature — regardless of its native frame rate — is resampled/aligned to the 100Hz storage timeline before caching. Any consumer (Reactive Engine, UI) requesting a value at an arbitrary timestamp T linearly interpolates between the two adjacent 100Hz cache samples. This single decision anchors cache file size estimates, the concurrency contract (§18.1), and the Resolved Modulation Cache's own resolution (§27.2), and must not be changed without re-validating all three.
 >
-> **Note on the FFT hop:** v2.0's parenthetical named a "50% overlap" default alongside this 100Hz storage timeline. Once §17.3 fixes the canonical rate at 48 kHz, those two figures are arithmetically distinct (a 2048-sample window at 50% overlap yields a 46.875 Hz native frame rate, not 100 Hz), so the default hop must be stated explicitly rather than inferred. **This is Appendix B item U-21 and is unresolved** — see §17.5.
+> **Note on the FFT hop:** v2.0's parenthetical named a "50% overlap" default alongside this 100Hz storage timeline. Those two figures are arithmetically incompatible once §17.3 fixes the canonical rate at 48 kHz, and the conflict is resolved in §17.5: **the canonical hop is 480 samples**, giving exactly 100 native analysis frames per second. **The "50% overlap" figure is superseded and is no longer the canonical configuration** — it must not be cited, restored, or assumed anywhere. Spectral frames are therefore *measured* at the storage rate and are never interpolated or upsampled to reach it.
 
 #### 17.3 Canonical Analysis Signal and Sample Rate
 
@@ -361,7 +361,7 @@ Custom: Arbitrary frequency band.
 
 > **[RESOLVED — P-4]** The full-resolution float32 FFT spectrum is **not** retained. The canonical retained representation is:
 >
-> - **1024 magnitude bins**, **100 Hz** temporal sampling, **FP16 (IEEE 754 binary16)** storage.
+> - **1024 magnitude bins**, **100 Hz** temporal sampling, **FP16 (IEEE 754 binary16)** storage. Per §17.5 every retained frame is a **measured** frame — produced natively at 100 Hz by the 2048-sample window / 480-sample hop framing — never an interpolated or upsampled one.
 > - **Concrete bin mapping** (the arithmetic meaning of "1024 bins" for the default 2048-point FFT at 48 kHz): a real FFT of a 2048-sample window yields 1025 unique bins (DC through Nyquist). The retained set is **bins 1…1024**; the DC bin (0 Hz) is discarded, as it carries no musical information and is contaminated by DC offset. Retained coverage is 23.4375 Hz … 24,000 Hz.
 > - **Magnitude scaling:** magnitudes are normalized against the canonical signal's full-scale reference before FP16 conversion. FP16 carries a 10-bit mantissa (~3 decimal digits); §119's "very quiet signal" fixture is the designated test for whether that precision holds at low amplitude. Should the tolerance tests below show it does not, the documented fallback is a dB-domain variant, which is a **format** change and therefore requires a `formatVersion` bump (§18.3) — not a silent reinterpretation.
 >
@@ -375,14 +375,28 @@ Custom: Arbitrary frequency band.
 >
 > **Size consequence (binding input to §18.3's disk budget):** 1024 bins × 2 bytes × 100 Hz ≈ **200 KiB/s ≈ 11.7 MB per track-minute** for the spectrum, plus roughly 0.7 MB per track-minute for the stored scalars — **≈ 12.4 MB per track-minute**, so a five-minute track costs ≈ **62 MB**. This figure, not an arbitrary round number, is what §18.3's budget is derived from.
 
-#### 17.5 Unresolved: Default FFT Hop / Overlap (Appendix B U-21)
+#### 17.5 Canonical Analysis Framing — FFT Window, Hop, and Frame Rate
 
-> **[OPEN — U-21]** §17.2 inherits a "50% overlap" default from v2.0 while mandating a 100 Hz storage timeline. With the canonical rate now fixed at 48 kHz (§17.3), the two cannot both be native:
+> **[RESOLVED — U-21]** The canonical analysis framing is three **separate** quantities, and they must be kept distinct in specification text, configuration, code, and tests. Conflating any two of them is the defect this section exists to prevent:
 >
-> - **50% overlap** → 1024-sample hop → **46.875 Hz** native frame rate, which must then be *upsampled* to the 100 Hz storage timeline. Every stored spectrum frame between two computed frames is interpolated rather than measured, and the retained spectrum costs ≈2.13× its own information content (§17.4's size figure is paid in full for data that is partly fabricated).
-> - **480-sample hop** → **exactly 100 Hz** native (76.6% overlap) → every stored frame is a measured frame, and temporal resolution for onset/beat (§21) is 10 ms rather than 21.3 ms.
+> | Quantity | Canonical value | Notes |
+> |---|---|---|
+> | **FFT window size** | **2048 samples** | Unchanged from §17.2. At the §17.3 canonical rate this is a `2048/48000 s ≈ 42.667 ms` window; bin width `23.4375 Hz`. |
+> | **Analysis hop** | **480 samples** | The distance between successive analysis frames. `480/48000 s = 10 ms` exactly. |
+> | **Native analysis frame rate** | **100 Hz** | `48000/480 = 100` frames per second, exactly — identical to §17.2's storage timeline. |
 >
-> This changes the numerical content of every cache entry and every golden vector, so it must be settled **before** `audio:analysis` and `audio:cache` are implemented. It is deliberately left open rather than resolved by inference. See Appendix B U-21.
+> Resulting window overlap is `(2048 − 480)/2048 = 76.5625%`. **Overlap is a derived quantity, never an input:** the hop is canonical, and overlap is whatever the window and hop imply. The former **"50% overlap"** figure inherited from v2.0 is **superseded and must not be retained, cited, or described as the canonical configuration** anywhere in this specification, in code, or in tests.
+>
+> **Binding consequence — no interpolation to reach the storage rate.** Because the native analysis frame rate is exactly the §17.2 storage rate, FFT-derived frames are written to the cache one-for-one as **measured** frames. Spectral frames must **never** be interpolated or upsampled merely to satisfy the 100 Hz timeline. §17.2's "resampled/aligned to the 100 Hz storage timeline" rule continues to govern any feature whose *own* native rate differs (for example a tempo estimate produced over a longer window); it is inapplicable to, and must not be applied to, the FFT path, which is already native.
+>
+> **Derived framing consequences** (mechanically forced by the values above; recorded so they are specified rather than assumed):
+> - **Frame anchoring: a frame's timestamp is its window START.** Analysis frame `n` covers input samples `[n·480, n·480 + 2048)` and is stored at cache timestamp `n · 10 ms`, measured from the §9.1 epoch. Any other anchoring — window centre, for instance — would place frames at `n·10 ms + 21.333 ms`, which never lands on the 10 ms grid and would reintroduce exactly the interpolation this ratification forbids. Start-anchoring is therefore forced, not chosen.
+> - **Tail handling:** frame count is `N = ceil(totalSamples / 480)`; the final windows are zero-padded where the window extends past the end of the asset. This guarantees every part of the asset is covered by at least one frame and makes `N` a pure function of asset length.
+> - **Onset/beat temporal resolution (§21) is 10 ms**, not 21.3 ms.
+>
+> **Cache identity:** the hop is an `analysisConfigHash` input in its own right (§18.2 item 5), independent of FFT size and of frame rate. Changing any of the three invalidates dependent cache entries.
+
+
 
 ### 18. AUDIO ANALYSIS CACHE
 
@@ -407,10 +421,10 @@ Changing image position MUST NOT invalidate analysis. Changing effect blur MUST 
 > **The hash MUST include (minimum, non-exhaustive):**
 > 1. Canonical analysis sample rate (§17.3).
 > 2. Channel policy (§17.3).
-> 3. FFT size (§106).
+> 3. FFT size (§106) — canonically 2048 samples (§17.5).
 > 4. FFT window function.
-> 5. FFT hop / overlap configuration (§17.5, U-21).
-> 6. Analysis frame rate — the §17.2 storage timeline.
+> 5. Analysis hop (§17.5) — canonically 480 samples. A distinct input from FFT size and from frame rate; overlap is derived from window and hop and is never itself an input.
+> 6. Analysis frame rate (§17.5) — canonically 100 Hz, matching §17.2's storage timeline.
 > 7. **Default** frequency-band definitions (§20) — i.e. the band set whose values are *stored*.
 > 8. Normalization algorithm and configuration (§19, §106 "Normalization").
 > 9. Beat-analysis configuration (§21, §106 "Beat detection").
@@ -1306,7 +1320,7 @@ Audio: import, decode, playback, waveform, trim, analysis, cache.
 > - The §116.1 module dependency-boundary check, landing **before** other Phase 1 code.
 > - The canonical analysis contracts ratified in §17.3, §17.4, §18.2, and §18.3.
 >
-> **Blocked by:** U-1 (DI framework) and U-2 (minimum Android API level) are **RESOLVED** — Hilt; API 35 (Android 15) minimum, `compileSdk`/`targetSdk` 36 — see §6.1 and Appendix B. U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist. **U-21 (default FFT hop, §17.5) is open and blocks only the `audio:analysis` and `audio:cache` work within this phase** — it changes cached numerical content and golden vectors, so it must be settled before those two modules are implemented. It does not block the foundation work (build/CI, `core:*`, assets, decoder, waveform peaks, playback).
+> **Blocked by:** nothing. U-1 (DI framework) and U-2 (minimum Android API level) are **RESOLVED** — Hilt; API 35 (Android 15) minimum, `compileSdk`/`targetSdk` 36 — see §6.1. U-21 (canonical analysis hop) is **RESOLVED** — 2048-sample window, 480-sample hop, 100 Hz native (§17.5). U-5 (exact SSIM thresholds) targets this phase's test infrastructure but does not block starting it — thresholds are refined empirically once real renders exist. **Phase 1 has no unresolved blockers, hard or scoped.**
 
 ### 130. PHASE 2
 
@@ -1582,8 +1596,8 @@ Everything above is now **ratified, binding specification text** — it is not a
 | U-18 | RendererBackend Vulkan follow-up — confirm this remains an unscheduled future ADR (ADR-011) and not a v1/near-term commitment, per §6's scope-down | Roadmap confirmation | Project Owner | OPEN | N/A (explicitly deferred; confirm deferral stands) |
 | U-19 | **Complete WASM Host ABI specification** — the full Analyzer host-function table beyond the three illustrative examples in §56.1, AND the entire Custom Layer/CPU-logic Generator ABI, which is currently unspecified at §57. Found during the pre-implementation consistency audit: this was previously deferred with "defined... at implementation time" language and no gate, which this item corrects. | Architecture-required companion specification; must be authored as a normative, versioned, capability-typed function table and pass the same security-review rigor §56.1 already requires of the Analyzer ABI | Project Owner | OPEN | **Phase 7 — hard gate: no Tier-2 plugin implementation (Analyzer, Custom Layer, or CPU-logic Generator) may begin until this item is resolved** |
 | U-20 | Plugin UI Schema's declarative grammar (§47/§48) — exact JSON keys/shapes for groups, sections, parameter dependencies, and visibility rules are described conceptually but not formally specified. Found during the pre-implementation consistency audit. | Plugin API surface design task | Project Owner | OPEN | Phase 7, before UI-schema-generation work begins |
-| U-21 | **Default FFT hop / overlap (§17.5).** §17.2 inherits a "50% overlap" default while mandating a 100 Hz storage timeline; with the canonical rate fixed at 48 kHz (§17.3) these are arithmetically distinct — 50% overlap gives a 46.875 Hz native frame rate that must be upsampled to 100 Hz (storing partly-interpolated spectra at ≈2.13× their information content), whereas a 480-sample hop gives exactly 100 Hz native at 76.6% overlap with 10 ms onset/beat resolution. Surfaced by the P-1…P-6 ratification pass, which made the arithmetic explicit. | DSP/analysis decision; changes cached numerical content and every golden vector | Project Owner | OPEN | **Phase 1 — blocks `audio:analysis` and `audio:cache` only; does not block build/CI, `core:*`, assets, decoder, waveform peaks, or playback** |
+| U-21 | **Canonical analysis hop (§17.5).** §17.2 inherited a "50% overlap" default while mandating a 100 Hz storage timeline; with the canonical rate fixed at 48 kHz (§17.3) these were arithmetically incompatible. Surfaced by the P-1…P-6 ratification pass, which made the arithmetic explicit. | DSP/analysis decision; changes cached numerical content and every golden vector | Project Owner | **RESOLVED — hop = 480 samples at 48 kHz → exactly 100 Hz native; FFT window unchanged at 2048; overlap 76.5625% is derived, not an input; "50% overlap" superseded; no interpolation to reach the storage rate** (§17.5) | ~~Phase 1~~ — resolved, no longer blocks |
 
-**Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred. **U-1 and U-2 are resolved (§6.1). U-5 is explicitly non-blocking to Phase 1's start (§129). U-21 is open and scoped: it blocks the `audio:analysis` and `audio:cache` modules within Phase 1, and nothing else (§17.5, §129). Every remaining open item targets a phase later than Phase 1.**
+**Nothing in Appendix B blocks Phase 0 completion** (this document, together with ARCHITECTURE_REVIEW.md, constitutes Phase 0). Each item above must be resolved, or explicitly and knowingly deferred with a named owner, before the phase it blocks begins — per §128's binding statement that Phase 1 may not begin until every Appendix B item is resolved or explicitly deferred. **U-1, U-2 and U-21 are resolved (§6.1, §17.5). U-5 is explicitly non-blocking to Phase 1's start (§129). Every remaining open item targets a phase later than Phase 1 — Phase 1 has no open Appendix B blockers of any kind.**
 
-**Decisions incorporated directly as normative text rather than as Appendix B items:** the P-1…P-6 ratification pass resolved channel policy and canonical sample rate (§17.3), retained spectrum representation (§17.4), `analysisConfigHash` membership (§18.2), cache format version / disk budget / eviction (§18.3), and the scope of §14.1's translation rule (P-5). These are resolved, so they belong in the normative body, not in a register of unresolved decisions. Only the one decision that genuinely remained open after that pass — U-21 — was added here.
+**Decisions incorporated directly as normative text rather than as Appendix B items:** the P-1…P-6 ratification pass resolved channel policy and canonical sample rate (§17.3), retained spectrum representation (§17.4), `analysisConfigHash` membership (§18.2), cache format version / disk budget / eviction (§18.3), and the scope of §14.1's translation rule (P-5). These are resolved, so they belong in the normative body, not in a register of unresolved decisions. Only the one decision that genuinely remained open after that pass — U-21, the canonical analysis hop — was added here, and it has since been resolved into §17.5.
