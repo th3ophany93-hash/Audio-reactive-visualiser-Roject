@@ -24,4 +24,5 @@ dependencies {
     implementation(project(":core:assets"))
     implementation(libs.coroutines.core)
     testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
 }

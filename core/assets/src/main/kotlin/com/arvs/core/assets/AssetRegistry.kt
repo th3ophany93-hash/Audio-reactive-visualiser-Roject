@@ -89,6 +89,11 @@ public sealed interface AssetAvailability {
      * plausible-looking placeholder digest is exactly the sort of value that ends up in a
      * cache key and quietly addresses the wrong content. There is no honest hash for an
      * asset nobody ever imported, so this case does not pretend to have one.
+     *
+     * **Ratified decision D-1** (PHASE_1_IMPLEMENTATION_PLAN.md §18) — a deliberate
+     * deviation from that plan's `Available | MissingRelinkRequired` API sketch. Neither an
+     * `AssetRef` nor any hashable asset identity may be fabricated for an unregistered id.
+     * Do not "simplify" this case away.
      */
     public data class Unknown(public val id: AssetId) : AssetAvailability
 

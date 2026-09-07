@@ -455,7 +455,23 @@ Overlap (76.5625%) is derived, never an input; the inherited "50% overlap" figur
 
 ---
 
-## 18. Carried-Forward Test Obligations
+## 18. Ratified Implementation Decisions (deviations from this plan's API sketch)
+
+Decisions taken during implementation that **differ from the illustrative API sketch in §5**
+and have been explicitly ratified by the Project Owner. They are recorded here so that a
+later reader who compares the code against §5's sketch finds the reasoning rather than an
+apparent inconsistency, and so that none of them can be reverted as "cleanup".
+
+| # | Decision | Supersedes | Ratified |
+|---|---|---|---|
+| D-1 | **`AssetAvailability` has a third case, `Unknown(AssetId)`**, returned when an id was never registered. §5's sketch shows `Available \| MissingRelinkRequired` only. Folding an unregistered id into `MissingRelinkRequired` would require fabricating an `AssetRef`, and an `AssetRef` requires an `AssetHash` — a plausible-looking placeholder digest is precisely the value that reaches a cache key and quietly addresses the wrong content. There is no honest hash for an asset nobody imported, so the type does not pretend to have one. **Neither an `AssetRef` nor any hashable asset identity may be fabricated for an unregistered id.** | §5 API sketch | Project Owner, Step 5 |
+
+Pinned by `AssetRegistryTest.hashes are never fabricated for unknown ids` and
+`AssetRefTest.the project-local id is not a content hash and cannot be used as one`.
+
+---
+
+## 18a. Carried-Forward Test Obligations
 
 Obligations recorded during implementation that are **not** yet discharged. Each names the
 file that must carry it and the trigger that makes it due. They are recorded here so they
@@ -465,6 +481,7 @@ reader who never opens this document.
 | # | Obligation | File | Due |
 |---|---|---|---|
 | T-1 | **§18.2 exclusion-half membership test.** `AnalysisConfigMembershipTest` asserts the inclusion list directly but leaves the exclusion half implicit — it holds only because no excluded concept has yet been added as a field of `AnalysisConfig`. Add a test that enumerates §18.2's named exclusions (reactive mapping parameters, master sensitivity, master smoothing, custom band definitions, trim points, keyframes) and asserts none appears among `AnalysisConfig`'s declared properties, failing with a message that names the §18.2 exclusion rule rather than the inclusion list. | `core/model/src/test/kotlin/com/arvs/core/model/AnalysisConfigMembershipTest.kt` | Before that test surface is next modified (Project Owner, Step 3) |
+| T-2 | **§116.1 has no test-only edge onto `testing:*`, so §119's fixtures are unreachable.** The guard checks `testImplementation` alongside production configurations, and `allowedEdges` grants no module an edge to `:testing:audio`. `testing:audio` therefore compiles but cannot be consumed by the modules it exists to serve. Step 5 worked around it (decoder tests hand-build WAV bytes, which is independently better for a parser), but **Step 8 cannot**: `audio:analysis`'s DSP tests and the golden analysis vectors are defined against the §119 catalogue, and duplicating that catalogue per module would defeat its purpose. Proposed resolution, for ratification rather than unilateral change: separate **production** edges from **test-only** edges in the guard, permit test-only edges *exclusively* onto `:testing:*`, and keep every other configuration bound by `allowedEdges` exactly as now — which also blocks the smuggling route (a `testImplementation` onto a non-testing module). The production graph §116.1 governs would be unchanged. | root `build.gradle.kts` (`allowedEdges` / `declaredDependencyConfigurations`) | **Blocks Step 8** — needs a decision before `audio:analysis` tests are written |
 
 ---
 
