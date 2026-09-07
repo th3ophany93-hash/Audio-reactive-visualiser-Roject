@@ -469,6 +469,32 @@ apparent inconsistency, and so that none of them can be reverted as "cleanup".
 Pinned by `AssetRegistryTest.hashes are never fabricated for unknown ids` and
 `AssetRefTest.the project-local id is not a content hash and cannot be used as one`.
 
+| # | Decision | Supersedes | Ratified |
+|---|---|---|---|
+| D-2 | **Scoped test-only dependency exception.** `testImplementation` / `androidTestImplementation` edges into `:testing:*` are permitted; the production module graph remains governed by `allowedEdges` exactly as ratified. Resolves obligation T-2: before this, the guard treated `testImplementation` identically to `implementation` and `allowedEdges` granted no module an edge to `:testing:*`, so §119's fixtures compiled but nothing could consume them and the §9.1 determinism suite had no way to reach them. | T-2 (obligation discharged) | Project Owner, Step 5 |
+
+The exception is deliberately narrow. Four clauses, each mechanically enforced and each
+negative-tested:
+
+1. **`audio:analysis` may consume `testing:audio` from its test configuration.** Verified
+   positively by `audio:analysis`'s `FixtureAvailabilityTest`, which actually consumes the
+   §119 catalogue and asserts §17.3's downmix on the stereo fixture.
+2. **No production configuration may acquire that edge.** Enforced by its own named rule
+   keyed on the `:testing:` path prefix — *not* left to `allowedEdges`. Negative-tested twice:
+   once normally, and once with `:testing:audio` deliberately added to `allowedEdges`, where
+   the D-2 rule still fires alone. The exception cannot be defeated by editing the allow-list.
+3. **Unrelated test-only edges are not implicitly permitted.** A `testImplementation` onto any
+   non-`:testing:` module is still bound by `allowedEdges`. Negative-tested with
+   `audio:analysis → audio:decoder`, which is rejected with a message naming the D-2 scope.
+4. **The pre-existing invariants continue to fail correctly.** Negative-tested: a production
+   back-edge (`audio:beat → audio:analysis`), a premature later-phase directory (`renderer/`),
+   and a pure-Kotlin module acquiring an Android plugin (`audio:beat`) all still fail the build.
+
+Configuration split in the root build script: `productionDependencyConfigurations`
+(`api`, `implementation`, `compileOnly`, `runtimeOnly`) is unchanged in its treatment;
+`testDependencyConfigurations` (`testImplementation`, `androidTestImplementation`) carries the
+exception. No configuration was added to or removed from the guard's scope.
+
 ---
 
 ## 18a. Carried-Forward Test Obligations
@@ -481,7 +507,7 @@ reader who never opens this document.
 | # | Obligation | File | Due |
 |---|---|---|---|
 | T-1 | **§18.2 exclusion-half membership test.** `AnalysisConfigMembershipTest` asserts the inclusion list directly but leaves the exclusion half implicit — it holds only because no excluded concept has yet been added as a field of `AnalysisConfig`. Add a test that enumerates §18.2's named exclusions (reactive mapping parameters, master sensitivity, master smoothing, custom band definitions, trim points, keyframes) and asserts none appears among `AnalysisConfig`'s declared properties, failing with a message that names the §18.2 exclusion rule rather than the inclusion list. | `core/model/src/test/kotlin/com/arvs/core/model/AnalysisConfigMembershipTest.kt` | Before that test surface is next modified (Project Owner, Step 3) |
-| T-2 | **§116.1 has no test-only edge onto `testing:*`, so §119's fixtures are unreachable.** The guard checks `testImplementation` alongside production configurations, and `allowedEdges` grants no module an edge to `:testing:audio`. `testing:audio` therefore compiles but cannot be consumed by the modules it exists to serve. Step 5 worked around it (decoder tests hand-build WAV bytes, which is independently better for a parser), but **Step 8 cannot**: `audio:analysis`'s DSP tests and the golden analysis vectors are defined against the §119 catalogue, and duplicating that catalogue per module would defeat its purpose. Proposed resolution, for ratification rather than unilateral change: separate **production** edges from **test-only** edges in the guard, permit test-only edges *exclusively* onto `:testing:*`, and keep every other configuration bound by `allowedEdges` exactly as now — which also blocks the smuggling route (a `testImplementation` onto a non-testing module). The production graph §116.1 governs would be unchanged. | root `build.gradle.kts` (`allowedEdges` / `declaredDependencyConfigurations`) | **Blocks Step 8** — needs a decision before `audio:analysis` tests are written |
+| T-2 ✅ **DISCHARGED by D-2 (Step 5).** | **§116.1 had no test-only edge onto `testing:*`, so §119's fixtures were unreachable.** The guard checks `testImplementation` alongside production configurations, and `allowedEdges` grants no module an edge to `:testing:audio`. `testing:audio` therefore compiles but cannot be consumed by the modules it exists to serve. Step 5 worked around it (decoder tests hand-build WAV bytes, which is independently better for a parser), but **Step 8 cannot**: `audio:analysis`'s DSP tests and the golden analysis vectors are defined against the §119 catalogue, and duplicating that catalogue per module would defeat its purpose. Proposed resolution, for ratification rather than unilateral change: separate **production** edges from **test-only** edges in the guard, permit test-only edges *exclusively* onto `:testing:*`, and keep every other configuration bound by `allowedEdges` exactly as now — which also blocks the smuggling route (a `testImplementation` onto a non-testing module). The production graph §116.1 governs would be unchanged. | root `build.gradle.kts` | Resolved — see decision **D-2** above |
 
 ---
 

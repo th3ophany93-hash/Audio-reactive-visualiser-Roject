@@ -18,4 +18,7 @@ dependencies {
     implementation(project(":audio:cache"))
     implementation(libs.coroutines.core)
     testImplementation(libs.junit)
+    // Decision D-2: §119's fixtures are consumed from the test configuration only. A
+    // production configuration declaring this same edge is a named build failure.
+    testImplementation(project(":testing:audio"))
 }

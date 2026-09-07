@@ -92,10 +92,39 @@ val pureKotlinModules = setOf(
     ":testing:audio", ":testing:golden",
 )
 
-val declaredDependencyConfigurations = setOf(
+// Configurations that put a module's code into a *shipped* artifact. These are governed by
+// `allowedEdges` with no exception whatsoever — this is the §116.1 production graph.
+val productionDependencyConfigurations = setOf(
     "api", "implementation", "compileOnly", "runtimeOnly",
+)
+
+// Configurations that exist only to compile and run tests. Nothing declared here reaches a
+// production artifact. Subject to the scoped exception in decision D-2 below.
+val testDependencyConfigurations = setOf(
     "testImplementation", "androidTestImplementation",
 )
+
+/**
+ * Decision D-2 (ratified) — the test-only dependency exception.
+ *
+ * §119's audio fixtures live in `:testing:audio` precisely so that one deterministic
+ * generator serves every module that needs them. Before this exception the guard treated
+ * `testImplementation` exactly like `implementation`, and `allowedEdges` granted no module an
+ * edge to `:testing:*` — so the fixtures compiled but nothing could consume them, and the
+ * §9.1 determinism suite had no way to reach them.
+ *
+ * The exception is deliberately narrow, and each clause is enforced separately below:
+ *
+ *  - It applies **only** to the configurations in [testDependencyConfigurations].
+ *  - It permits an edge **only** to a module under `:testing:`.
+ *  - A production configuration depending on `:testing:*` is its own named violation, so the
+ *    rule cannot be defeated by adding a testing path to `allowedEdges`.
+ *  - A *test* edge to any non-testing module remains bound by `allowedEdges` exactly as
+ *    before. The exception is for test fixtures, not a back door around the module graph.
+ *
+ * The production graph §116.1 governs is unchanged by this.
+ */
+fun String.isTestingModule(): Boolean = startsWith(":testing:")
 
 gradle.projectsEvaluated {
     val violations = mutableListOf<String>()
@@ -123,13 +152,32 @@ gradle.projectsEvaluated {
                 "have an explicit, reviewed position in the §116.1 graph."
             return@forEach
         }
-        val declared = module.configurations
-            .filter { it.name in declaredDependencyConfigurations }
+        fun edgesFrom(configurationNames: Set<String>): Set<String> = module.configurations
+            .filter { it.name in configurationNames }
             .flatMap { configuration -> configuration.dependencies.withType(ProjectDependency::class.java) }
             .map { it.path }
             .toSet()
-        (declared - allowed).sorted().forEach { disallowed ->
+
+        val productionEdges = edgesFrom(productionDependencyConfigurations)
+        val testEdges = edgesFrom(testDependencyConfigurations)
+
+        // 1a. Production configurations are bound by allowedEdges, unconditionally.
+        (productionEdges - allowed).sorted().forEach { disallowed ->
             violations += "${module.path} → $disallowed is not an allowed edge (§116.1)."
+        }
+
+        // 1b. Test fixtures must never reach a shipped artifact. Checked by name rather than
+        //     left to allowedEdges, so the rule survives someone adding a :testing: path there.
+        productionEdges.filter { it.isTestingModule() }.sorted().forEach { shipped ->
+            violations += "${module.path} → $shipped is declared on a production configuration. " +
+                ":testing:* modules are test fixtures and must never ship (decision D-2)."
+        }
+
+        // 1c. Test configurations: :testing:* is the D-2 exception; everything else is still
+        //     bound by allowedEdges, so the exception cannot be used as a back door.
+        (testEdges.filterNot { it.isTestingModule() }.toSet() - allowed).sorted().forEach { disallowed ->
+            violations += "${module.path} → $disallowed is not an allowed edge (§116.1). The " +
+                "test-only exception (D-2) covers :testing:* modules only."
         }
     }
 
@@ -171,7 +219,10 @@ val verifyModuleGraph by tasks.registering {
     val moduleCount = allowedEdges.size
     val edgeCount = allowedEdges.values.sumOf { it.size }
     doLast {
-        logger.lifecycle("§116.1 module graph OK — $moduleCount modules, $edgeCount allowed edges, no back-edges.")
+        logger.lifecycle(
+            "§116.1 module graph OK — $moduleCount modules, $edgeCount allowed production edges, " +
+                "no back-edges; test-only edges into :testing:* permitted per decision D-2.",
+        )
     }
 }
 
