@@ -4,6 +4,21 @@
     <application
         android:name=".ArvsApplication"
         android:label="Audio Reactive Video Studio"
-        android:supportsRtl="true" />
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Arvs.Debug">
+
+        <!-- §129: Phase 1 ships only a debug harness. This is not the §16 Trim editor,
+             which is Phase 2 (§103) and lives in a ui module that does not exist yet. -->
+        <activity
+            android:name=".debug.DebugHarnessActivity"
+            android:exported="true"
+            android:label="ARVS Debug Harness">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
 
 </manifest>

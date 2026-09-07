@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -19,6 +20,7 @@ android {
         versionCode = 1
         versionName = "0.1.0-phase1"
     }
+    buildFeatures { compose = true }
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -42,6 +44,14 @@ dependencies {
     implementation(project(":audio:decoder"))
     implementation(project(":audio:analysis"))
     implementation(project(":audio:playback"))
+
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.activity.compose)
+    implementation(libs.lifecycle.runtime.ktx)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

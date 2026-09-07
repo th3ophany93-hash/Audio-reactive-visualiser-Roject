@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A Compose activity still needs a platform theme for its window background and
+         system bars; Material3's colours are applied inside the composition. -->
+    <style name="Theme.Arvs.Debug" parent="android:Theme.Material.NoActionBar" />
+</resources>
