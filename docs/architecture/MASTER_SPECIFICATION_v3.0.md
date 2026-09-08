@@ -478,6 +478,112 @@ Custom: Arbitrary frequency band.
 > no gain applied to reach one. Any such parameter is outside this specification and **must not**
 > be a member of `analysisConfigHash` (§18.2 item 8).
 
+#### 17.7 Stage-2 Publication Model
+
+> **[RESOLVED — D-6]** §17.6's [T-7] reference is a whole-track quantity, which makes Stage 2's
+> relationship to §17.1's "progressive" pipeline and §18.1's visibility marker a question the
+> specification did not previously have to answer. This section answers it and is normative.
+>
+> **1. Position of the whole-track pass.** The peak-energy pass is **not a new stage**. §17.1's
+> five-stage priority order and its numbering are unchanged. Stage 2 is internally two phases:
+>
+> | Phase | Work | Publishes |
+> |---|---|---|
+> | **2a — Measure** | One traversal of the §17.3 canonical signal over the §17.5 framing, producing RMS, Peak, Energy and the [T-8] K-weighted Loudness into memory, and recording `max_m Energy[m]`. | Nothing |
+> | **2b — Finalize and publish** | Derives Normalized Energy from the now-final reference and writes Stage 2's features and the reference atomically. | All Stage-2 features, at once |
+>
+> Phase 2a is a **single traversal**, not a prepass plus a second sweep: the raw scalars and the
+> K-weighted loudness are produced in the same pass that finds the reference, because the
+> K-weighting filter is IIR and streams in frame order alongside them. Phase 2b touches no audio —
+> it is a division over an array already in memory. Stage-2 state for a five-minute track is
+> ≈ 480 KB (four float32 channels at 100 Hz), so holding it in memory until publication is not a
+> material cost.
+>
+> **2. Stage 2 publishes atomically.** Stage 2 publishes **once**, after the reference is final, and
+> **all** of its features become visible in that single transition. No Stage-2 feature is visible
+> before it, including those that do not depend on the reference. Publishing the reference-free
+> scalars early would create a window in which a reader sees Energy but not Normalized Energy, and
+> §18.1's completeness marker has no way to express "some features of this frame".
+>
+> **3. What the cache contains before Stage-2 publication: nothing.** For the tier-3
+> `AudioAnalysisCache` entry `(assetHash, analysisConfigHash)`, **no partial file is ever visible** —
+> no placeholder, no zero-filled arrays, no header-only file. Two consequences:
+>
+> - A read before publication returns **`NotAnalyzed`**, which is distinct from §18.1's
+>   **`Pending`**. `Pending` means the entry exists and this timestamp has not been reached yet, and
+>   carries §18.1's nearest-available-sample fallback. `NotAnalyzed` means there is no entry, so
+>   there is no nearest sample to fall back to, and §17.1's explicit "analyzing…" state is the only
+>   correct response. Conflating the two would have a reader fall back to a sample that does not
+>   exist.
+> - **Tier 2 is unaffected.** §82.1's derived preview cache (waveform peaks — §17.1's stage 1) is a
+>   separate cache with a separate key and is published independently. §16's waveform is therefore
+>   available while Stage 2 is still measuring.
+>
+> **4. What "progressive" now means in §17.1.** Progressive is **stage-granular at minimum, and
+> frame-granular where a stage is causal.** The criterion is:
+>
+> > A stage may publish incrementally **if and only if** every feature it produces is computable
+> > from data at or before the frame being published. A stage producing any feature that depends on
+> > data later in the track publishes **atomically**.
+>
+> Stage 2's atomicity is a *consequence* of that rule under §17.6 [T-7], not a special case. The
+> rule also pre-answers the same question for later stages without deciding them here: a stage-4
+> tempo estimate over a long window, for example, is governed by the same criterion.
+>
+> §17.1's other guarantees are untouched: stages still run in the mandated priority order, deeper
+> analysis still continues in the background behind a non-blocking progress indicator, and
+> scrubbing still never blocks the UI thread.
+>
+> **5. Interaction with §18.1's highest-complete-index.** The marker is **per stage**, not one
+> global index — a single index cannot express "Stage 2 complete, Stage 3 at frame 5 000". For an
+> atomic stage the marker takes **exactly two values**: `NOT_PUBLISHED` and `frameCount − 1`. It
+> never takes an intermediate value, which is what "atomic" means here operationally and is
+> directly testable.
+>
+> The marker store is the **single linearization point**: all data is written first, the marker is
+> stored last with release semantics, and readers acquire-load the marker before reading data. A
+> reader that observes the new marker is therefore guaranteed to observe all the data behind it.
+> §18.1's lock-free, never-blocking read path is preserved unchanged — an atomic stage is simply
+> one whose marker advances in a single step rather than climbing.
+>
+> **6. Cancellation, failure and process death during 2a.** Because phase 2a writes nothing to disk,
+> all three are **indistinguishable from never having started**:
+>
+> - **Cancellation** discards in-memory state. There is no on-disk artifact to clean up.
+> - **Failure** discards in-memory state and reports a §97 `AUDIO_ANALYSIS_ERROR`. Per §17.1 a
+>   failing stage degrades that feature only: stage 1's tier-2 peaks remain valid and readable, and
+>   the project remains editable.
+> - **Process death** leaves no entry, and §18.3's "silently regenerated on first use" applies
+>   unchanged.
+>
+> **Recovery is always full recomputation, never resumption.** Persisting phase-2a state so a later
+> run could resume it would reintroduce exactly the incremental refinement §17.6 [T-7] forbids, by
+> another route. This is stated so that a future optimization cannot arrive at it by accident.
+>
+> Phase 2b's write is itself atomic — written to a temporary file and renamed into place, as §82.1's
+> tier 2 already does — so process death *during* publication leaves either no entry or a complete
+> one, never a partial one.
+>
+> **7. No published Stage-2 scalar is ever revised.** Confirmed, and structurally rather than by
+> discipline. Four independent mechanisms each make revision impossible:
+>
+> 1. The reference is final before the first byte is written (§17.6 [T-7]).
+> 2. Publication is a single atomic transition, so there is no second write to revise anything.
+> 3. §18.1's cache is immutable-once-written and append-only.
+> 4. The cache is content-addressed: a changed asset yields a different `assetHash` and a changed
+>    configuration a different `analysisConfigHash`, so a corrected value is expressed as a **new
+>    entry**, never as a mutation of an existing one. A corrected DSP is published by bumping
+>    `algorithmVersion` (§18.2 item 11) or `formatVersion` (§18.3).
+>
+> **Consequence to measure, recorded rather than assumed.** Atomic Stage-2 publication means
+> Stage-2 features become available only at the end of phase 2a's traversal, where a frame-granular
+> Stage 2 could have exposed early frames sooner. §17.1's "Trim screen usable within ~1 second"
+> target is unaffected for the **waveform** — that is stage 1 on tier 2, published independently —
+> but the time to Stage-2 availability is now bounded below by a full traversal. Phase 2a is a
+> single pass over an in-memory float array and is expected to be small next to decode, but this is
+> an empirical claim: §121's performance baselines must measure time-to-Stage-2 on both §6.1
+> reference devices and record it in `PERFORMANCE.md`.
+
 ### 18. AUDIO ANALYSIS CACHE
 
 Create reusable `AudioAnalysisCache`. Store: `timestamp, RMS, Peak, FFT, Bands, Onset, Beat, Centroid, Flux, Chroma`. Prefer efficient binary storage for large analysis data.
@@ -488,7 +594,7 @@ Changing image position MUST NOT invalidate analysis. Changing effect blur MUST 
 
 > **[RATIFIED — Ref AR-6.1, AR-10.1]**
 >
-> **Concurrency:** `AudioAnalysisCache` is **immutable-once-written and append-only**, randomly readable by timestamp, structured so the render thread can read it **lock-free** (e.g. a versioned array/ring buffer behind an atomic "highest-complete-index" marker) and **never blocks** waiting for analysis to catch up during preview. If analysis for time T is not yet available, the renderer uses the nearest available cached sample and flags the frame in Diagnostics (§98) as "analysis pending" — it never stalls the render thread. During export, the §17.1 precondition guarantees this situation cannot occur.
+> **Concurrency:** (§17.7 refines the visibility marker below: it is **per stage**, and for an atomic stage it takes exactly two values.) `AudioAnalysisCache` is **immutable-once-written and append-only**, randomly readable by timestamp, structured so the render thread can read it **lock-free** (e.g. a versioned array/ring buffer behind an atomic "highest-complete-index" marker) and **never blocks** waiting for analysis to catch up during preview. If analysis for time T is not yet available, the renderer uses the nearest available cached sample and flags the frame in Diagnostics (§98) as "analysis pending" — it never stalls the render thread. During export, the §17.1 precondition guarantees this situation cannot occur.
 >
 > **Storage scope:** the cache is **content-addressed**, keyed by `(assetHash, analysisConfigHash)` — where `assetHash` is the asset's content hash as recorded on its Asset Registry entry (§82's `hash` field), obtained by resolving the project's `audio.assetRef` (§10) through the Asset Registry, never the raw `assetRef` value itself (see §27.2 for the identical rule applied to the Resolved Modulation Cache) — and stored **external to the portable project file** in an app-managed cache directory — never embedded in the JSON project (§10, §81). It is disposable and regenerable: if missing (fresh install, cleared cache, moved project), it is silently regenerated on first use following the §17.1 progressive/priority order. Project backup/export/share bundles (§111) **never** include analysis cache payloads.
 
