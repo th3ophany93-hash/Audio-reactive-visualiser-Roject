@@ -74,10 +74,8 @@ public data class AnalysisConfig(
                 "${band.name}:${formatDouble(band.lowHz)}-${formatDouble(band.highHz)}"
             },
         )
-        appendField(
-            "normalization",
-            "enabled=${normalization.enabled},targetLufs=${formatDouble(normalization.targetLufs)}",
-        )
+        // §17.6 [T-8] / §18.2 item 8: no loudness target participates in the hash.
+        appendField("normalization", "enabled=${normalization.enabled}")
         appendField(
             "beat",
             "enabled=${beat.enabled}," +

@@ -1,6 +1,7 @@
 package com.arvs.audio.analysis
 
 import com.arvs.core.model.AudioFormatInfo
+import com.arvs.core.model.AnalysisStage
 import com.arvs.core.time.AnalysisFraming
 import com.arvs.core.time.TimeSpan
 import com.arvs.testing.audio.Fixtures

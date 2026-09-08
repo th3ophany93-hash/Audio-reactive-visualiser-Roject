@@ -96,8 +96,22 @@ class AnalysisConfigMembershipTest {
 
     @Test
     fun `changing normalization changes the hash`() {
-        assertHashChanges(AnalysisConfig(normalization = NormalizationConfig(targetLufs = -14.0)))
         assertHashChanges(AnalysisConfig(normalization = NormalizationConfig(enabled = false)))
+    }
+
+    @Test
+    fun `no loudness target participates in the hash`() {
+        // §17.6 [T-8] and §18.2 item 8: the Loudness Approximation's parameters are fixed by
+        // the specification, not configured, and no target level exists. A `targetLufs` field
+        // was carried here in an earlier draft and was never in the specification; this pins
+        // its absence so it cannot return by accident.
+        val canonicalForm = AnalysisConfig().canonicalForm()
+        assertTrue(
+            "no loudness target may appear in the canonical form: $canonicalForm",
+            !canonicalForm.contains("Lufs", ignoreCase = true) &&
+                !canonicalForm.contains("target", ignoreCase = true),
+        )
+        assertEquals("enabled=true", canonicalForm.lines().first { it.startsWith("normalization=") }.substringAfter('='))
     }
 
     @Test

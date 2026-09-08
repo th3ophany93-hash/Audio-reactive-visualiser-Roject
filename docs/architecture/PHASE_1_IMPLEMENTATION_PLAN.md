@@ -503,24 +503,29 @@ exception. No configuration was added to or removed from the guard's scope.
 
 | D-6 | **Stage-2 publication model.** Recorded normatively in **§17.7**. The [T-7] whole-track pass is **phase 2a of Stage 2**, not a new stage — §17.1's five-stage order and numbering are unchanged. Stage 2 publishes **atomically**, once, after the reference is final; before that the tier-3 cache contains **nothing** and a read returns `NotAnalyzed` (distinct from §18.1's `Pending`, which has a nearest-sample fallback that `NotAnalyzed` cannot have). "Progressive" in §17.1 becomes **stage-granular at minimum, frame-granular where a stage is causal**, under a general criterion that also pre-answers the same question for later stages. §18.1's completeness marker becomes **per stage**, taking exactly two values for an atomic stage, with the marker store as the single release/acquire linearization point. Phase 2a writes nothing to disk, so cancellation, failure and process death are indistinguishable from never having started, and recovery is always full recomputation — never resumption, which would reintroduce incremental refinement by another route. No published Stage-2 scalar can be revised: four independent mechanisms make it structurally impossible. | New — resolves the open design question raised after D-4 | Project Owner, post-Step 8 |
 
-### Cache-contract changes pending review (gate on Step 9)
+### Cache-contract changes — reviewed and approved; status after Step 9
 
-D-3, D-4 and D-5 are recorded in the normative record only. The following **code** changes follow
-from them, alter `analysisConfigHash` or the cache format, and are explicitly **not applied** —
-Step 9 does not begin until they are reviewed:
+The Project Owner approved this agenda in full before Step 9 began. Status below.
 
 | # | Change | Touches |
 |---|---|---|
-| 1 | Remove `targetLufs` from `NormalizationConfig`, and from `AnalysisConfig.canonicalForm()` and `HASHED_FIELD_NAMES`. Changes every `analysisConfigHash` value. No cache files exist yet, so there is no migration cost — but it is a hash change and is gated with the rest. | `core:model`, `AnalysisConfigMembershipTest` |
-| 2 | Add `Normalized Energy` and `Loudness Approximation` to the stage-2 feature set. | `audio:analysis` |
-| 3 | Add the track peak-energy reference to the cache header as immutable metadata (D-4). **Design question resolved by D-6/§17.7** — what remains is implementation: phase 2a/2b split, atomic publish, per-stage marker with release/acquire ordering. | `audio:analysis`, `audio:cache` format |
-| 6 | Add the `NotAnalyzed` read outcome, distinct from §18.1's `Pending` (§17.7 clause 3). | `audio:cache` read API |
-| 7 | Measure time-to-Stage-2 on both §6.1 reference devices and record it in `PERFORMANCE.md` (§17.7's recorded consequence, §121). | `testing:performance`, `PERFORMANCE.md` |
-| 4 | Implement the BS.1770 K-weighting pre-filter at the fixed 48 kHz canonical rate, with published coefficients pinned by test. | `audio:analysis` |
-| 5 | Extend golden vectors and §17.4's mandatory precision tolerances across the §119 fixture set for the three newly defined scalars. | `testing:golden`, `PERFORMANCE.md` |
+| 1 ✅ | Remove `targetLufs` from `NormalizationConfig`, and from `AnalysisConfig.canonicalForm()` and `HASHED_FIELD_NAMES`. Changes every `analysisConfigHash` value. No cache files exist yet, so there is no migration cost — but it is a hash change and is gated with the rest. | `core:model`, `AnalysisConfigMembershipTest` |
+| 2 ✅ | Add `Normalized Energy` and `Loudness Approximation` to the stage-2 feature set. | `audio:analysis` |
+| 3 ✅ | Add the track peak-energy reference to the cache header as immutable metadata (D-4). **Design question resolved by D-6/§17.7** — what remains is implementation: phase 2a/2b split, atomic publish, per-stage marker with release/acquire ordering. | `audio:analysis`, `audio:cache` format |
+| 6 ✅ | Add the `NotAnalyzed` read outcome, distinct from §18.1's `Pending` (§17.7 clause 3). | `audio:cache` read API |
+| 7 ⏳ **deferred to Step 12** — needs the two §6.1 reference devices, which this environment does not have. Measure time-to-Stage-2 on both §6.1 reference devices and record it in `PERFORMANCE.md` (§17.7's recorded consequence, §121). | `testing:performance`, `PERFORMANCE.md` |
+| 4 ✅ | Implement the BS.1770 K-weighting pre-filter at the fixed 48 kHz canonical rate, with published coefficients pinned by test. | `audio:analysis` |
+| 5 ⏳ **partial** | Stage-2 values are pinned by the determinism suite and by analytic-truth tests across the §119 set. §17.4's FP16 *spectrum* tolerances need stage 3 — Step 10. Extend golden vectors and §17.4's mandatory precision tolerances across the §119 fixture set for the three newly defined scalars. | `testing:golden`, `PERFORMANCE.md` |
 
 
 ---
+
+### Module placement note (Step 9)
+
+`AnalysisStage` moved from `audio:analysis` to `core:model`. §116.1's graph forces it:
+`audio:cache` needs the stage taxonomy for §17.7's per-stage completion markers, and
+`audio:cache` has no edge to `audio:analysis` — the analyser depends on the cache, not the
+reverse. Same reasoning that placed `AssetRef` in `core:model` in Step 4. No behaviour changed.
 
 ## 18a. Carried-Forward Test Obligations
 

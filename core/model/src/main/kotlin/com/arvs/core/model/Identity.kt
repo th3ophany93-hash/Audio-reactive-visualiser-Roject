@@ -145,13 +145,22 @@ public data class FrequencyBand(
     }
 }
 
-/** Loudness normalisation applied to the analysis signal (§19). §18.2 item 8. */
+/**
+ * Normalisation applied to the analysis signal (§19). §18.2 item 8.
+ *
+ * **There is deliberately no loudness target here.** §17.6 [T-8] fixes every parameter of the
+ * Loudness Approximation — K-weighted, ungated, per-frame, canonical mono, dBFS, floored at
+ * −70 dB — and states that no loudness *target* exists and that none may be a member of
+ * `analysisConfigHash`. An earlier draft of this type carried a `targetLufs` field with an
+ * EBU R128 default; it was never in the specification, and §18.2 now names its exclusion
+ * explicitly. Do not reintroduce one.
+ *
+ * [enabled] governs §106's master "Normalization" control, which is computation-side and
+ * therefore in the hash (§18.2 item 8).
+ */
 public data class NormalizationConfig(
     public val enabled: Boolean = true,
-    public val targetLufs: Double = -23.0,
-) {
-    init { require(targetLufs < 0.0) { "targetLufs must be negative: $targetLufs" } }
-}
+)
 
 /** Beat/onset detection configuration (§21). §18.2 item 9. */
 public data class BeatConfig(
