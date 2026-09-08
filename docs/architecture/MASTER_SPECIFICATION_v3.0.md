@@ -375,6 +375,66 @@ Custom: Arbitrary frequency band.
 >
 > **Size consequence (binding input to §18.3's disk budget):** 1024 bins × 2 bytes × 100 Hz ≈ **200 KiB/s ≈ 11.7 MB per track-minute** for the spectrum, plus roughly 0.7 MB per track-minute for the stored scalars — **≈ 12.4 MB per track-minute**, so a five-minute track costs ≈ **62 MB**. This figure, not an arbitrary round number, is what §18.3's budget is derived from.
 
+##### 17.4.1 dB-Domain Retained Spectrum — the §17.4 fallback, taken
+
+> **[RESOLVED — D-7, discharges T-13]** §17.4's mandatory precision testing was performed in Step 10
+> and produced the failure §17.4 anticipates: linear FP16 does **not** hold at low amplitude. The
+> §119 very-quiet fixture (−120 dBFS) normalizes to a spectral peak of 9.673e-07, inside binary16's
+> **subnormal** range, where the format degrades from 10-bit relative precision to a fixed absolute
+> step of 2⁻²⁴ ≈ 5.96e-08 — an absolute floor near −144 dBFS. 95.06 % of that fixture's significant
+> bins were lost outright. §17.4's documented fallback is therefore **taken**, as the format change
+> §17.4 requires it to be.
+>
+> **The retained spectrum is stored in the dB domain. FP16 quantisation is applied to the dBFS
+> value, never to the linear magnitude.**
+>
+> | | |
+> |---|---|
+> | Encoding | `dBFS = 20 · log₁₀(linearMagnitude)` |
+> | Normative floor | `DB_FLOOR = −160.0` dBFS |
+> | Zero / below-floor | represented as `DB_FLOOR` |
+> | Quantisation | FP16 applied to the dBFS value |
+> | Decoding | `linearMagnitude = 10^(storedDb / 20)`, with `DB_FLOOR` respected as the lower bound |
+>
+> `DB_FLOOR` is exactly representable in binary16 (−160 = −1.25 × 2⁷, an integer multiple of that
+> binade's ULP of 0.125), so the floor survives a round trip bit-exactly and cannot drift.
+>
+> **Format consequence.** This changes the meaning of every stored spectrum value, so per §18.3 it
+> is a `formatVersion` bump: **2 → 3**. A version-1 or version-2 spectrum payload must **never** be
+> interpreted as a version-3 payload — §18.3's existing rule (a reader meeting an unknown version
+> rejects the file outright, deletes it, and regenerates) is what enforces this, and no speculative
+> migration is written: incompatible entries are invalidated and recomputed.
+>
+> **Precision consequence, and the scope of §17.4's 4.9e-4 bound.** §17.4's tolerance of a maximum
+> relative error of **4.9e-4** (2⁻¹¹, binary16's relative step) remains normative and governs the
+> quantity FP16 quantises — which this decision makes the **dBFS value**. The bound holds there
+> unconditionally and by construction, since it is binary16's own relative step.
+>
+> It does **not** carry over to the decoded *linear* magnitude, and cannot, for any dB-domain
+> representation. Propagating a dB error `Δd` gives a linear relative error of
+> `10^(Δd/20) − 1 ≈ 0.11513 · Δd`, and binary16's half-ULP on a dB value grows with its magnitude,
+> so the decoded-linear relative error is bounded by 4.9e-4 only for `|dBFS| < 16`:
+>
+> | \|dBFS\| | binary16 half-ULP (dB) | decoded-linear relative error |
+> |---|---|---|
+> | 8 … 16 | 0.003906 | 4.498e-04 |
+> | 16 … 32 | 0.007813 | 8.999e-04 |
+> | 32 … 64 | 0.015625 | 1.801e-03 |
+> | 64 … 128 | 0.031250 | 3.604e-03 |
+> | 128 … 160 | 0.062500 | 7.222e-03 |
+>
+> This is the trade the fallback *is*: linear FP16 held 4.9e-4 relative precision everywhere it
+> could represent a value at all, and then underflowed to nothing below ≈−144 dBFS. dB-domain FP16
+> represents the entire −160…0 dBFS range with **bounded, scale-independent** precision — never
+> worse than 0.0625 dB, i.e. 0.72 %, anywhere in the range — at the cost of the tighter linear
+> figure above −16 dBFS. Uniform log-domain precision is the property a spectrum representation
+> feeding perceptual, dB-shaped reactive mappings actually needs; §17.4 chose the fallback for
+> exactly this reason. Both figures are measured per fixture and recorded in `PERFORMANCE.md`.
+>
+> **The §119 very-quiet fixture remains a mandatory precision fixture and must not be weakened or
+> removed.** Under this representation it is required to be *meaningfully representable*: its
+> significant bins survive quantisation rather than flushing to zero.
+
 #### 17.5 Canonical Analysis Framing — FFT Window, Hop, and Frame Rate
 
 > **[RESOLVED — U-21]** The canonical analysis framing is three **separate** quantities, and they must be kept distinct in specification text, configuration, code, and tests. Conflating any two of them is the defect this section exists to prevent:
@@ -659,6 +719,73 @@ Expose: `beatConfidence, beatPhase, tempo, onsetStrength`. Do not assume all mus
 > - Beat/tempo/onset are exposed identically to any other `ReactiveSource` (Bass, Mid, RMS, etc.) in every reactive-mapping picker — there is no special-cased "less important" UI treatment.
 > - However, **every `ReactiveSource` carries a `reliability`/`confidence` channel** (not just beat — this generalizes to any source that can legitimately be unreliable for certain input, e.g. a custom analyzer plugin on silence). For Beat specifically, when `beatConfidence` is below a documented threshold for a sustained window (e.g. persistently low on ambient/rubato/beatless music, an explicitly supported genre per §110's "Dark Ambient" template), the resolved beat-driven modulator output **holds its last stable value or decays toward the mapping's configured neutral point** — it never free-runs into noisy false triggers.
 > - The Reactive Mapping UI (§105) surfaces a persistent, visible low-confidence indicator on any mapping whose source has sustained low reliability, prompting (not forcing) the user to consider Onset or RMS instead.
+
+#### 21.1 Beat Detection v1 — Algorithm, Threshold, and Confidence
+
+> **[RESOLVED — D-8, discharges T-14]** §21 requires beats be detected against "a documented
+> threshold" and lists `beatConfidence` among the exposed features, but v3.0 documented no
+> threshold value, named no detection algorithm, and defined `beatConfidence` nowhere. All three
+> are fixed here. Beat detection v1 is **CPU-side, deterministic, and derived from the already
+> defined §17.4 spectral magnitude analysis** — it introduces no new input to the pipeline.
+>
+> **Onset signal.** Over the §17.5 framing, from the §17.4 retained magnitude spectrum:
+>
+> ```
+> flux[t] = Σ_bin max(0, magnitude[t][bin] − magnitude[t−1][bin])
+> ```
+>
+> Half-wave rectified, identical to §17's Spectral Flux. `flux[0] = 0` — the first frame has no
+> predecessor.
+>
+> **Adaptive threshold.**
+>
+> ```
+> threshold[t] = median(fluxWindow) + 1.5 · MAD(fluxWindow)
+> ```
+>
+> where `MAD` is the median absolute deviation about that window's median, and `fluxWindow` is the
+> **1.0 second** threshold history window ending at `t`. Median/MAD rather than mean/σ because a
+> transient is precisely the outlier a mean-based threshold would absorb into its own estimate.
+>
+> **Beat candidate.** A frame `t` is a confirmed beat if and only if **all** of:
+>
+> 1. `flux[t] > threshold[t]`;
+> 2. `flux[t]` is a local maximum;
+> 3. at least **100 ms** have elapsed since the previous confirmed beat.
+>
+> **Refractory period: 100 ms**, which is clause 3.
+>
+> **Confidence.**
+>
+> ```
+> beatConfidence = clamp((flux − threshold) / max(threshold, EPSILON), 0.0, 1.0)
+> ```
+>
+> **Beat event.** A beat event shall expose at minimum: `timestamp`, `frameIndex`, `confidence`,
+> `strength`.
+>
+> **Tempo.** Tempo estimation is **separate from beat triggering**, and tempo confidence must
+> **never** suppress a valid transient beat — this is the executable form of §21's "do not assume
+> all music has stable BPM". Tempo estimation may use deterministic autocorrelation / periodicity
+> analysis within the normative search range **40 … 240 BPM**.
+>
+> **Forbidden in beat detection:** ML or neural inference; randomisation; wall-clock dependence;
+> GPU-dependent detection; device-dependent thresholds. Beat detection must produce bit-identical
+> output for identical input on every device, exactly as §9.1 requires of the rest of analysis.
+>
+> **Normative `BeatConfig` values — members of `analysisConfigHash` (§18.2 item 9).**
+>
+> | Field | Value |
+> |---|---|
+> | `minTempoBpm` | 40 |
+> | `maxTempoBpm` | 240 |
+> | `thresholdWindowSeconds` | 1.0 |
+> | `madMultiplier` | 1.5 |
+> | `refractoryMs` | 100 |
+>
+> Any future change to these values **must** change `analysisConfigHash`, and therefore invalidates
+> every cache entry computed under the old values. That is the point: they change the numbers
+> stored in the cache, which is §18.2's governing test for membership.
 
 ### 22. REACTIVE ENGINE
 

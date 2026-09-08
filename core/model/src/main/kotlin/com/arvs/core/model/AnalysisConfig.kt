@@ -76,11 +76,16 @@ public data class AnalysisConfig(
         )
         // §17.6 [T-8] / §18.2 item 8: no loudness target participates in the hash.
         appendField("normalization", "enabled=${normalization.enabled}")
+        // §21.1 [D-8]: all five detector values are normative and all five are hashed. They
+        // decide which frames are reported as beats, so §18.2's governing test makes them members.
         appendField(
             "beat",
             "enabled=${beat.enabled}," +
                 "minTempoBpm=${formatDouble(beat.minTempoBpm)}," +
-                "maxTempoBpm=${formatDouble(beat.maxTempoBpm)}",
+                "maxTempoBpm=${formatDouble(beat.maxTempoBpm)}," +
+                "thresholdWindowSeconds=${formatDouble(beat.thresholdWindowSeconds)}," +
+                "madMultiplier=${formatDouble(beat.madMultiplier)}," +
+                "refractoryMs=${formatDouble(beat.refractoryMs)}",
         )
         appendField("analysisQuality", quality.name)
     }

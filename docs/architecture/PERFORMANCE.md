@@ -8,70 +8,107 @@ Figures are produced by tests, not typed by hand. Each section names the test th
 
 ---
 
-## 1. FP16 retained-spectrum precision (§17.4 — mandatory)
+## 1. FP16 retained-spectrum precision (§17.4, §17.4.1 — mandatory)
 
 Produced by `audio:analysis` `Fp16PrecisionTest`, over §119's full fixture set at the ratified
-§17.5 framing (2048-sample window, 480-sample hop, 48 kHz).
+§17.5 framing (2048-sample window, 480-sample hop, 48 kHz), under §17.4.1 [D-7]'s **dB-domain**
+representation at `formatVersion` 3.
 
-### 1.1 Relative error, normal range
+§17.4's tolerance of **4.9e-4** governs the quantity FP16 quantises, which §17.4.1 makes the
+**dBFS value**. §1.1 is that quantity. §1.4 records what the decoded *linear* magnitude costs;
+the two are not interchangeable and neither stands in for the other.
 
-Worst-case relative error for magnitudes binary16 stores as *normal* values. The arithmetic bound
-for a 10-bit mantissa is 2⁻¹¹ ≈ **4.9e-4**; every fixture sits at or under it.
+### 1.1 Relative error of the stored dBFS value — §17.4's normative bound
 
 | §119 fixture | Worst relative error |
 |---|---|
 | silence | 0.000e+00 |
-| bass-sweep | 4.614e-04 |
-| white-noise | 4.859e-04 |
+| sine-440 | 4.771e-04 |
+| sine-1000 | 4.691e-04 |
+| sine-10000 | 4.810e-04 |
+| bass-sweep | 4.860e-04 |
+| white-noise | 4.871e-04 |
 | impulse | 0.000e+00 |
-| clipping | 4.860e-04 |
-| very-quiet | 0.000e+00 *(no magnitude reaches the normal range — see §1.3)* |
+| drums-120bpm | 4.839e-04 |
+| clipping | 4.768e-04 |
+| very-quiet | 4.662e-04 |
+| stereo-440-660 | 4.750e-04 |
 
-**CI threshold: 4.9e-4.** A regression above it means the representation or the normalization
-changed, not that the bound needs loosening.
+**CI threshold: 4.9e-4.** Every fixture is under it, including very-quiet — which under the
+previous linear representation could not be measured against this bound at all, because its
+magnitudes never reached binary16's normal range.
 
-### 1.2 Significant-bin survival
+### 1.2 Absolute dB error — the scale-independence the fallback was taken for
 
-Share of bins **within 80 dB of their own frame's peak** that survive FP16 quantisation. Measured
-against the frame peak rather than across all bins: a sparse spectrum is mostly window leakage far
-below any audible floor, so counting every bin measures the window, not the format.
+| §119 fixture | Worst dB error |
+|---|---|
+| silence | 0.0000 dB |
+| sine-440 | 0.0624 dB |
+| sine-1000 | 0.0624 dB |
+| sine-10000 | 0.0623 dB |
+| bass-sweep | 0.0625 dB |
+| white-noise | 0.0312 dB |
+| impulse | 0.0000 dB |
+| drums-120bpm | 0.0453 dB |
+| clipping | 0.0617 dB |
+| very-quiet | 0.0617 dB |
+| stereo-440-660 | 0.0625 dB |
 
-| §119 fixture | Peak magnitude | Significant bins | Survival |
-|---|---|---|---|
-| sine-440 (0.5) | 4.837e-01 | 2 428 | **100.00 %** |
-| clipping | 1.143e+00 | 6 717 | **100.00 %** |
-| white-noise | 4.798e-02 | 20 480 | **100.00 %** |
-| drums-120bpm | 3.390e-01 | 20 480 | **100.00 %** |
-| very-quiet | 9.673e-07 | 2 428 | **4.94 %** |
+**CI threshold: 0.0625 dB** — binary16's coarsest half-ULP anywhere in −160…0 dBFS (the 128…256
+binade). Arithmetic, not a tuned figure. The −120 dBFS fixture is held to the same 0.0617 dB as
+the loudest content, which is the point: precision no longer depends on level.
 
-**CI threshold: > 99.9 % for ordinary-level content.** The very-quiet row is recorded, not gated —
-see §1.3.
+### 1.3 Significant-bin survival
 
-### 1.3 Finding — linear FP16 does not hold at low amplitude
+Share of bins **within 80 dB of their own frame's peak, and above §17.4.1's −160 dBFS floor**
+that survive quantisation.
 
-§17.4 designates the very-quiet fixture as "the designated test for whether that precision holds at
-low amplitude", and states the consequence of failure: "the documented fallback is a dB-domain
-variant, which is a **format** change and therefore requires a `formatVersion` bump (§18.3) — not a
-silent reinterpretation."
+| §119 fixture | Significant bins | Survival |
+|---|---|---|
+| sine-440 | 2 428 | **100.00 %** |
+| sine-1000 | 3 144 | **100.00 %** |
+| sine-10000 | 3 806 | **100.00 %** |
+| bass-sweep | 1 578 | **100.00 %** |
+| white-noise | 20 480 | **100.00 %** |
+| drums-120bpm | 20 480 | **100.00 %** |
+| clipping | 6 717 | **100.00 %** |
+| very-quiet | 203 | **100.00 %** |
+| stereo-440-660 | 3 091 | **100.00 %** |
 
-**The test shows it does not hold.** The fixture is a −120 dBFS tone; its normalized spectral peak
-(9.673e-07) lands in binary16's **subnormal** range, where the format's precision changes from
-10-bit *relative* to a fixed *absolute* step of 2⁻²⁴ ≈ 5.96e-08 — an absolute floor at roughly
-−144 dBFS. Consequences measured:
+**CI threshold: > 99.9 %, applied to every fixture including very-quiet.**
 
-- The peak survives, but only to the subnormal step: **≈3 % relative error**, versus 0.049 % for
-  the same signal at ordinary level.
-- **95 % of the fixture's significant bins are lost outright**, so the frame's internal dynamic
-  range is destroyed even though its loudest bin survives.
-- Ordinary-level content is entirely unaffected (§1.2), so this is a floor problem, not a
-  precision problem: linear FP16 is scale-*dependent*, and a dB-domain representation would not be.
+Under the previous linear representation very-quiet survived **4.94 %** of 2 428 significant bins.
+It now survives **100.00 %**. Its significant-bin *population* is smaller (203) because the count
+excludes bins below §17.4.1's −160 dBFS floor: at a peak of 9.673e-07, the 80 dB band reaches down
+to 9.673e-11, which is outside the representation by design. The populations are therefore not
+like-for-like — what changed is that every bin the format claims to carry now survives, where
+before 95 % of them did not.
 
-**This is a specification decision, not a defect, and it has not been taken.** Linear FP16 is
-implemented exactly as §17.4 currently specifies. Switching to the dB-domain fallback would change
-the meaning of every stored value and require a `formatVersion` bump; it is recorded for the
-Project Owner as **T-13**.
+### 1.4 Decoded linear relative error — the recorded cost
 
----
+| §119 fixture | Worst relative error | from dB error |
+|---|---|---|
+| silence | 0.000e+00 | 0.00000 dB |
+| sine-440 | 7.206e-03 | 0.06237 dB |
+| sine-1000 | 7.208e-03 | 0.06238 dB |
+| sine-10000 | 7.157e-03 | 0.06235 dB |
+| bass-sweep | 7.205e-03 | 0.06250 dB |
+| white-noise | 3.590e-03 | 0.03124 dB |
+| impulse | 0.000e+00 | 0.00000 dB |
+| drums-120bpm | 5.198e-03 | 0.04527 dB |
+| clipping | 7.129e-03 | 0.06170 dB |
+| very-quiet | 7.080e-03 | 0.06171 dB |
+| stereo-440-660 | 7.222e-03 | 0.06251 dB |
+
+Gated against the exact propagation identity `linearRelativeError = 10^(ΔdB/20) − 1`, checked per
+bin rather than against a recorded constant. Worst residual against that identity across the whole
+fixture set: **5.937e-08** — Float's own relative step, 2⁻²⁴ ≈ 5.96e-08, which is the single
+rounding the identity does not capture.
+
+This is the trade §17.4.1 states. Linear FP16 held 4.9e-4 in this column everywhere it could
+represent a value, then underflowed to nothing below ≈−144 dBFS. dB-domain FP16 gives up that
+tighter figure below −16 dBFS and gains a bounded, scale-independent representation across the
+entire −160…0 range.
 
 ## 2. Analysis cache size (§17.4, §18.3)
 

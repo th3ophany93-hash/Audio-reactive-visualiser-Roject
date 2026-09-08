@@ -116,8 +116,34 @@ class AnalysisConfigMembershipTest {
 
     @Test
     fun `changing beat configuration changes the hash`() {
+        // §21.1 [D-8] makes all five detector values normative *and* hash members: each decides
+        // which frames are reported as beats, so §18.2's governing test puts them in. Every one
+        // is asserted — a field that silently fell out of `canonicalForm()` would let two
+        // genuinely different analyses share a cache key, which is the exact correctness defect
+        // §27.2's cache-key rules exist to prevent.
+        //
+        // Values must differ from the ratified defaults (40 / 240 / 1.0 / 1.5 / 100) or the test
+        // asserts nothing: an earlier version used maxTempoBpm = 240.0, which stopped being a
+        // change the moment §21.1 ratified 240 as the default.
         assertHashChanges(AnalysisConfig(beat = BeatConfig(enabled = false)))
-        assertHashChanges(AnalysisConfig(beat = BeatConfig(maxTempoBpm = 240.0)))
+        assertHashChanges(AnalysisConfig(beat = BeatConfig(minTempoBpm = 50.0)))
+        assertHashChanges(AnalysisConfig(beat = BeatConfig(maxTempoBpm = 200.0)))
+        assertHashChanges(AnalysisConfig(beat = BeatConfig(thresholdWindowSeconds = 2.0)))
+        assertHashChanges(AnalysisConfig(beat = BeatConfig(madMultiplier = 2.5)))
+        assertHashChanges(AnalysisConfig(beat = BeatConfig(refractoryMs = 150.0)))
+    }
+
+    @Test
+    fun `the ratified beat defaults are the ones that get hashed`() {
+        // Pins the values themselves, not just that changing them matters. A silent edit to a
+        // default would change every cache key on the device without any test noticing.
+        val beat = AnalysisConfig().canonicalForm().lines()
+            .first { it.startsWith("beat=") }.substringAfter('=')
+        assertEquals(
+            "enabled=true,minTempoBpm=40.000000,maxTempoBpm=240.000000," +
+                "thresholdWindowSeconds=1.000000,madMultiplier=1.500000,refractoryMs=100.000000",
+            beat,
+        )
     }
 
     @Test

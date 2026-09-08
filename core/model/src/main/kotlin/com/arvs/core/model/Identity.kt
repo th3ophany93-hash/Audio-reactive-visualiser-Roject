@@ -162,16 +162,42 @@ public data class NormalizationConfig(
     public val enabled: Boolean = true,
 )
 
-/** Beat/onset detection configuration (§21). §18.2 item 9. */
+/**
+ * Beat/onset detection configuration (§21, §21.1). §18.2 item 9.
+ *
+ * **Every value here is normative and every value is in `analysisConfigHash`.** §21.1 [D-8] fixes
+ * all five: they determine which frames are reported as beats and with what confidence, so by
+ * §18.2's governing test — *if changing an input changes a number stored in the cache, it is in
+ * the hash* — they are members, and changing any of them invalidates every entry computed under
+ * the old values.
+ *
+ * The defaults are not preferences. An earlier draft carried `minTempoBpm = 60` and
+ * `maxTempoBpm = 200` as unratified Step-2 inventions that were nonetheless already in the hash —
+ * structurally the same defect as `NormalizationConfig.targetLufs`. §21.1 ratifies the range at
+ * **40 … 240 BPM** and fixes the three detector parameters alongside it.
+ */
 public data class BeatConfig(
     public val enabled: Boolean = true,
-    public val minTempoBpm: Double = 60.0,
-    public val maxTempoBpm: Double = 200.0,
+    /** §21.1 — bottom of the normative tempo search range, BPM. */
+    public val minTempoBpm: Double = 40.0,
+    /** §21.1 — top of the normative tempo search range, BPM. */
+    public val maxTempoBpm: Double = 240.0,
+    /** §21.1 — length of the trailing flux history the adaptive threshold is computed over. */
+    public val thresholdWindowSeconds: Double = 1.0,
+    /** §21.1 — the multiplier on the window's MAD in `median + k·MAD`. */
+    public val madMultiplier: Double = 1.5,
+    /** §21.1 — minimum spacing between confirmed beats, milliseconds. */
+    public val refractoryMs: Double = 100.0,
 ) {
     init {
         require(minTempoBpm > 0.0) { "minTempoBpm must be positive: $minTempoBpm" }
         require(maxTempoBpm > minTempoBpm) {
             "maxTempoBpm ($maxTempoBpm) must exceed minTempoBpm ($minTempoBpm)"
         }
+        require(thresholdWindowSeconds > 0.0) {
+            "thresholdWindowSeconds must be positive: $thresholdWindowSeconds"
+        }
+        require(madMultiplier >= 0.0) { "madMultiplier must not be negative: $madMultiplier" }
+        require(refractoryMs >= 0.0) { "refractoryMs must not be negative: $refractoryMs" }
     }
 }

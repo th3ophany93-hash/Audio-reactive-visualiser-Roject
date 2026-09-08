@@ -3,7 +3,7 @@ package com.arvs.audio.cache
 import com.arvs.core.model.AnalysisCacheKey
 import com.arvs.core.model.AnalysisStage
 import com.arvs.core.model.FeatureId
-import com.arvs.core.model.Fp16
+import com.arvs.core.model.SpectrumCodec
 import com.arvs.core.time.AnalysisFraming
 import com.arvs.core.time.AudioSourceTime
 import java.util.concurrent.atomic.AtomicLongArray
@@ -113,8 +113,9 @@ public class AnalysisCacheEntry(
     /**
      * Stages §17.4's retained spectrum. Like [stageFeature], invisible until [publishAtomic].
      *
-     * [halves] holds raw binary16 bit patterns, frame-major: frame `n`'s bins occupy
-     * `[n·binCount, (n+1)·binCount)`.
+     * [halves] holds raw binary16 bit patterns of §17.4.1's **dBFS** values, frame-major: frame
+     * `n`'s bins occupy `[n·binCount, (n+1)·binCount)`. Produce them with
+     * [SpectrumCodec.encodeFrame]; never write a linearly quantised magnitude here.
      */
     public fun stageSpectrum(stage: AnalysisStage, binCount: Int, halves: ShortArray) {
         require(binCount > 0) { "binCount must be positive: $binCount" }
@@ -130,7 +131,13 @@ public class AnalysisCacheEntry(
     }
 
     /**
-     * Reads one frame of the retained spectrum, decoding binary16 to float.
+     * Reads one frame of the retained spectrum, decoding §17.4.1's stored dBFS back to a linear
+     * magnitude.
+     *
+     * The stored bits are a binary16 **dBFS** value, never a linear magnitude — see
+     * [SpectrumCodec]. Decoding with a plain `Fp16.toFloat` would hand the caller a number near
+     * −160 and call it a magnitude, which is exactly the "silent reinterpretation" §17.4 forbids
+     * and why the format version was bumped rather than the payload quietly redefined.
      *
      * Returns false when no spectrum is staged, when its stage is unpublished, or when the frame
      * is past that stage's marker — the same visibility rules [read] applies, so the spectrum can
@@ -147,7 +154,7 @@ public class AnalysisCacheEntry(
         if (frameIndex < 0 || frameIndex > marker) return false
 
         val base = (frameIndex * spectrumBinCount).toInt()
-        for (bin in 0 until spectrumBinCount) into[bin] = Fp16.toFloat(halves[base + bin])
+        for (bin in 0 until spectrumBinCount) into[bin] = SpectrumCodec.decode(halves[base + bin])
         return true
     }
 

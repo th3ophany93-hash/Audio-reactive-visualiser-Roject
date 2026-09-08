@@ -13,9 +13,8 @@ package com.arvs.core.model
  * edge to `audio:analysis` — the analyser depends on the cache, not the reverse. The same
  * reasoning that put `AssetRef` here in Step 4.
  *
- * Only [WAVEFORM_PEAKS] and [SCALAR_ENVELOPE] are implemented. The rest are declared so the
- * ordering is complete and assertable now, and so a later stage cannot be added without
- * deciding where it belongs.
+ * All five stages are implemented as of Step 10; stage 4 was unblocked by §21.1 [D-8], which
+ * supplied the beat algorithm, threshold and confidence definition §21 had left open.
  */
 public enum class AnalysisStage(public val displayName: String) {
     /**
@@ -31,13 +30,21 @@ public enum class AnalysisStage(public val displayName: String) {
     /** Stage 2 — RMS and peak envelope. */
     SCALAR_ENVELOPE("RMS / peak envelope"),
 
-    /** Stage 3 — FFT magnitude, log spectrum, §20 frequency bands. Not implemented. */
+    /** Stage 3 — FFT magnitude, log spectrum, §20 frequency bands. */
     SPECTRUM("FFT spectrum and bands"),
 
-    /** Stage 4 — onset, beat probability, beat phase, tempo (§21). Not implemented. */
+    /**
+     * Stage 4 — onset, beat probability, beat phase, tempo (§21, §21.1).
+     *
+     * Publishes incrementally. §21.1's local-maximum condition needs frame `t+1` to decide frame
+     * `t`, so the marker simply lags one frame behind the measurement — frame `t` is published
+     * once `t+1` has been measured, which still satisfies §17.7's criterion for the frame being
+     * *published*. Tempo is a whole-track estimate and is derived on demand rather than stored,
+     * so it adds no atomic quantity to this stage.
+     */
     BEAT("Onset / beat / tempo"),
 
-    /** Stage 5 — centroid, flux, rolloff, flatness, chroma. Highest cost. Not implemented. */
+    /** Stage 5 — centroid, flux, rolloff, flatness, chroma. Highest cost. */
     SPECTRAL_DESCRIPTORS("Spectral descriptors and chroma"),
     ;
 
@@ -52,9 +59,10 @@ public enum class AnalysisStage(public val displayName: String) {
      * publishes atomically because §17.6 [T-7]'s Normalized Energy depends on a whole-track
      * reference. [WAVEFORM_PEAKS] is not stored in this cache at all — §82.1 assigns it to tier 2.
      *
-     * Stages 3–5 are declared non-atomic provisionally; each is decided against the same criterion
-     * when it is implemented. A stage-4 tempo estimate over a long window is the obvious candidate
-     * to revisit.
+     * Stages 3–5 are non-atomic, each decided against that criterion when it was implemented.
+     * Stage 3 and stage 5 are per-frame by construction. Stage 4 needs one frame of lookahead for
+     * §21.1's local-maximum test, which makes its marker lag by a frame rather than making it
+     * atomic; its whole-track tempo estimate is derived on demand and never published here.
      */
     public val publishesAtomically: Boolean get() = this == SCALAR_ENVELOPE
 

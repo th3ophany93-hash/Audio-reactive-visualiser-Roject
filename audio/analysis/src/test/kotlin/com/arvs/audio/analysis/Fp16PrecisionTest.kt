@@ -6,39 +6,50 @@ import com.arvs.core.model.AnalysisConfig
 import com.arvs.core.model.AnalysisStage
 import com.arvs.core.model.AssetHash
 import com.arvs.core.model.Fp16
+import com.arvs.core.model.SpectrumCodec
 import com.arvs.core.time.AnalysisFraming
 import com.arvs.testing.audio.AudioFixture
 import com.arvs.testing.audio.Fixtures
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 /**
- * §17.4's **mandatory** precision testing for the FP16 retained spectrum.
+ * §17.4's **mandatory** precision testing for the retained spectrum, under §17.4.1's dB-domain
+ * representation.
  *
  * §17.4: "deterministic golden and tolerance tests must establish and document the accepted
  * precision of the FP16 representation, across §119's full fixture set, including the very quiet
  * and clipping cases. The measured tolerances are recorded in `PERFORMANCE.md` and become the
  * thresholds the CI tier (§77.1) enforces."
  *
- * §17.4 also names the consequence of failure: "Should the tolerance tests below show it does not
- * [hold at low amplitude], the documented fallback is a dB-domain variant, which is a **format**
- * change and therefore requires a `formatVersion` bump (§18.3) — not a silent reinterpretation."
- * So a failure here is a specification event, not a tuning exercise — the thresholds below are the
- * measured result, and if the representation ever stops meeting them the answer is a format
- * change, never a loosened bound.
+ * §17.4 named the consequence of failure — a dB-domain variant, as a format change — and Step 10
+ * measured that failure. §17.4.1 [D-7] takes the fallback, so what is measured here is the
+ * fallback's precision, at `formatVersion` 3.
+ *
+ * **Two different quantities, deliberately kept apart.** §17.4's 4.9e-4 tolerance governs the
+ * quantity FP16 quantises, which §17.4.1 makes the **dBFS value**. The decoded **linear**
+ * magnitude carries a larger error below −16 dBFS, necessarily and for any dB-domain
+ * representation. Both are measured; neither is allowed to stand in for the other.
  */
 class Fp16PrecisionTest {
 
     private val stage = SpectrumStage()
 
     /**
-     * Worst-case relative error for a magnitude that binary16 stores as a *normal* value.
+     * §17.4's tolerance: binary16's own relative step, 2⁻¹¹ ≈ 4.88e-4.
      *
-     * A 10-bit mantissa gives a relative step of 2⁻¹¹ ≈ 4.88e-4. This is arithmetic, not a
-     * measurement — it is the bound the format cannot beat.
+     * Arithmetic, not a measurement — it is the bound the format cannot beat, and under §17.4.1
+     * it applies to the stored dBFS value.
      */
-    private val normalRangeTolerance = 4.9e-4
+    private val storedTolerance = 4.9e-4
+
+    /**
+     * §17.4.1's dB-domain guarantee: binary16's coarsest half-ULP anywhere in −160…0 dBFS is
+     * 0.0625 dB (the 128…256 binade). Also arithmetic rather than a tuned figure.
+     */
+    private val dbTolerance = 0.0625
 
     private fun spectraOf(fixture: AudioFixture): List<FloatArray> {
         val canonical = CanonicalSignal.from(fixture.toPcmBuffer(), fixture.format)
@@ -51,167 +62,184 @@ class Fp16PrecisionTest {
         }
     }
 
-    @Test
-    fun `magnitudes above the subnormal threshold keep ten-bit relative precision`() {
-        // The headline result: for every §119 fixture, magnitudes that binary16 represents as
-        // normal values survive with the mantissa's full relative precision.
-        val worstByFixture = LinkedHashMap<String, Double>()
+    // --- §17.4's tolerance, on the quantity §17.4.1 quantises -----------------------------------
 
+    @Test
+    fun `the stored dB value meets section 17_4's tolerance across every fixture`() {
+        // PERFORMANCE.md §1.1. Every §119 fixture, every frame, every bin.
+        val report = StringBuilder("\n=== PERFORMANCE.md §1.1 — stored dBFS relative error ===\n")
         Fixtures.all(frames = 9_600).forEach { fixture ->
             var worst = 0.0
             spectraOf(fixture).forEach { spectrum ->
                 spectrum.forEach { magnitude ->
-                    if (magnitude >= Fp16.MIN_NORMAL) {
-                        worst = maxOf(worst, Fp16.relativeError(magnitude))
-                    }
+                    worst = maxOf(worst, SpectrumCodec.storedRelativeError(magnitude))
                 }
             }
-            worstByFixture[fixture.name] = worst
-        }
-
-        worstByFixture.forEach { (name, worst) ->
-            assertTrue("$name worst relative error $worst exceeds $normalRangeTolerance",
-                worst <= normalRangeTolerance)
-        }
-        println("FP16 worst relative error, normal range, per §119 fixture:")
-        worstByFixture.forEach { (name, worst) -> println("  %-16s %.3e".format(name, worst)) }
-    }
-
-    @Test
-    fun `the very quiet fixture is measured against the subnormal bound, not the normal one`() {
-        // §17.4 names this fixture as the test of whether FP16 precision holds at low amplitude.
-        //
-        // It does not, and that is the finding — not a threshold to loosen. The fixture is a
-        // −120 dBFS tone, so its normalized spectral peak (~1e-6) lands in binary16's *subnormal*
-        // range, where the representation switches from 10-bit relative precision to a fixed
-        // absolute step of 2⁻²⁴ ≈ 5.96e-8. Applying the normal-range bound here is a category
-        // error, and an earlier version of this test did exactly that.
-        //
-        // What is asserted is what is arithmetically true of subnormals. What is *measured* is
-        // the survival rate, which is the number §17.4's format decision turns on.
-        val spectra = spectraOf(Fixtures.veryQuiet(9_600))
-        val nonZero = spectra.flatMap { it.asList() }.filter { it > 0.0f }
-        assertTrue("the fixture should produce non-zero magnitudes", nonZero.isNotEmpty())
-
-        val survived = nonZero.count { Fp16.quantise(it) > 0.0f }
-        val survivalRate = survived.toDouble() / nonZero.size
-        val peak = nonZero.max()
-
-        println(
-            "very-quiet fixture: peak %.3e (%s), %d/%d magnitudes survive FP16 (%.2f%%)".format(
-                peak,
-                if (peak >= Fp16.MIN_NORMAL) "normal" else "SUBNORMAL",
-                survived, nonZero.size, survivalRate * 100,
-            ),
-        )
-
-        // The dominant content survives — the signal is not lost outright.
-        assertTrue("the fixture's peak magnitude $peak must survive", Fp16.quantise(peak) > 0.0f)
-
-        // And it survives only to the subnormal step, which is the bound that actually applies.
-        val subnormalBound = Fp16.MIN_SUBNORMAL / 2.0 / peak
-        assertTrue(
-            "peak relative error ${Fp16.relativeError(peak)} exceeds the subnormal bound $subnormalBound",
-            Fp16.relativeError(peak) <= subnormalBound * 1.01,
-        )
-        assertTrue("the peak is expected to be subnormal for this fixture", peak < Fp16.MIN_NORMAL)
-    }
-
-    @Test
-    fun `low-amplitude loss is quantified, since section 17_4 makes it a format decision`() {
-        // §17.4: "Should the tolerance tests below show it does not [hold at low amplitude], the
-        // documented fallback is a dB-domain variant, which is a format change and therefore
-        // requires a formatVersion bump — not a silent reinterpretation."
-        //
-        // The metric is survival among bins **within 80 dB of that frame's own peak**, not among
-        // all non-zero bins. Counting every bin measures the wrong thing: a pure tone's spectrum
-        // is mostly window leakage far below any audible floor, so it scores badly however good
-        // the representation is. Bins within 80 dB of the frame peak are the ones a reactive
-        // mapping can actually respond to.
-        //
-        // This test measures rather than gates, because the response §17.4 prescribes to a
-        // failure is a specification decision, not a code change.
-        val significantFloorDb = 80.0
-        val floorRatio = Math.pow(10.0, -significantFloorDb / 20.0)
-        val measured = LinkedHashMap<String, Triple<Double, Float, Int>>()
-
-        listOf(
-            Fixtures.veryQuiet(9_600),
-            Fixtures.sine440(9_600, amplitude = 0.5f),
-            Fixtures.clipping(9_600),
-            Fixtures.whiteNoise(9_600),
-            Fixtures.drums(9_600),
-        ).forEach { fixture ->
-            var significant = 0
-            var survived = 0
-            var peak = 0.0f
-            spectraOf(fixture).forEach { spectrum ->
-                val framePeak = spectrum.max()
-                peak = maxOf(peak, framePeak)
-                if (framePeak <= 0.0f) return@forEach
-                val threshold = framePeak * floorRatio
-                spectrum.forEach { magnitude ->
-                    if (magnitude >= threshold) {
-                        significant++
-                        if (Fp16.quantise(magnitude) > 0.0f) survived++
-                    }
-                }
-            }
-            val rate = if (significant == 0) 1.0 else survived.toDouble() / significant
-            measured[fixture.name] = Triple(rate, peak, significant)
-        }
-
-        println("FP16 survival among bins within ${significantFloorDb.toInt()} dB of the frame peak:")
-        measured.forEach { (name, result) ->
-            println(
-                "  %-16s %7.2f%%  peak %.3e  (%d significant bins)".format(
-                    name, result.first * 100, result.second, result.third,
-                ),
+            report.append("| %-14s | %.3e |\n".format(fixture.name, worst))
+            assertTrue(
+                "${fixture.name}: stored relative error $worst exceeds $storedTolerance",
+                worst <= storedTolerance,
             )
         }
-
-        // Ordinary-level content must be unaffected; a regression there is a defect, not a
-        // format question.
-        listOf("sine-440", "clipping", "white-noise", "drums-120bpm").forEach { name ->
-            val (rate, _, _) = measured.getValue(name)
-            assertTrue("$name significant-bin survival was $rate", rate > 0.999)
-        }
-
-        // The very quiet fixture is recorded, not gated — its outcome is §17.4's decision input.
-        val (quietRate, quietPeak, _) = measured.getValue("very-quiet")
-        println(
-            "very-quiet significant-bin survival %.2f%% at peak %.3e — §17.4 decision input"
-                .format(quietRate * 100, quietPeak),
-        )
+        println(report)
     }
 
     @Test
-    fun `the clipping fixture does not overflow binary16`() {
-        // The other case §17.4 names. Normalized magnitudes are bounded near 1.0, far below
-        // binary16's 65504 ceiling, so overflow is structurally impossible — asserted so a
-        // future change to the normalization reference cannot silently introduce it.
-        val spectra = spectraOf(Fixtures.clipping(9_600))
-        val peak = spectra.flatMap { it.asList() }.max()
+    fun `dB-domain precision is uniform across the whole level range`() {
+        // PERFORMANCE.md §1.2. The property the fallback was taken *for*: the very-quiet fixture
+        // is represented as precisely as the loudest one, because binary16's relative step now
+        // applies to an exponent. Under linear FP16 this test could not have passed at all.
+        val report = StringBuilder("\n=== PERFORMANCE.md §1.2 — worst dB error ===\n")
+        Fixtures.all(frames = 9_600).forEach { fixture ->
+            var worstDb = 0.0
+            spectraOf(fixture).forEach { spectrum ->
+                spectrum.forEach { magnitude ->
+                    val db = SpectrumCodec.toDb(magnitude)
+                    val round = SpectrumCodec.toDb(SpectrumCodec.decode(SpectrumCodec.encode(magnitude)))
+                    worstDb = maxOf(worstDb, abs(round - db).toDouble())
+                }
+            }
+            report.append("| %-14s | %.4f dB |\n".format(fixture.name, worstDb))
+            assertTrue("${fixture.name}: worst dB error $worstDb", worstDb <= dbTolerance)
+        }
+        println(report)
+    }
 
-        assertTrue("clipping peaked at $peak", peak < Fp16.MAX_VALUE)
-        assertTrue(spectra.all { frame -> frame.all { !Fp16.quantise(it).isInfinite() } })
+    // --- the very-quiet fixture: mandatory, and now meaningfully representable -------------------
+
+    @Test
+    fun `the very quiet fixture is meaningfully representable`() {
+        // §17.4.1 keeps this fixture mandatory and requires exactly this. Under linear FP16 only
+        // 4.94 % of its significant bins survived; the fixture is unchanged and the bar is the
+        // same, so the comparison is like for like.
+        val spectra = spectraOf(Fixtures.veryQuiet(9_600))
+        val (significant, survived) = survivalOf(spectra)
+
+        assertTrue("no significant bins to measure", significant > 0)
+        val survival = survived.toDouble() / significant
+        println("very-quiet: %d significant bins, survival %.2f %%".format(significant, survival * 100))
+        assertTrue("very-quiet survival ${survival * 100} %", survival > 0.999)
+    }
+
+    @Test
+    fun `significant bins survive across every fixture`() {
+        // PERFORMANCE.md §1.3. "Significant" = within 80 dB of the frame's own peak: a sparse
+        // spectrum is mostly window leakage far below any audible floor, so counting every bin
+        // measures the window rather than the format.
+        val report = StringBuilder("\n=== PERFORMANCE.md §1.3 — significant-bin survival ===\n")
+        Fixtures.all(frames = 9_600).forEach { fixture ->
+            val (significant, survived) = survivalOf(spectraOf(fixture))
+            if (significant == 0L) return@forEach
+            val survival = survived.toDouble() / significant
+            report.append("| %-14s | %7d | %.2f %% |\n".format(fixture.name, significant, survival * 100))
+            assertTrue(
+                "${fixture.name}: survival ${survival * 100} %",
+                survival > 0.999,
+            )
+        }
+        println(report)
+    }
+
+    /** Bins within 80 dB of their frame's peak, and how many survive a codec round trip. */
+    private fun survivalOf(spectra: List<FloatArray>): Pair<Long, Long> {
+        var significant = 0L
+        var survived = 0L
+        spectra.forEach { spectrum ->
+            val peak = spectrum.maxOrNull() ?: 0.0f
+            if (peak <= 0.0f) return@forEach
+            val floor = peak / 10_000.0f                      // −80 dB relative to the frame peak
+            spectrum.forEach { magnitude ->
+                if (magnitude < floor || magnitude <= SpectrumCodec.FLOOR_LINEAR) return@forEach
+                significant++
+                if (SpectrumCodec.decode(SpectrumCodec.encode(magnitude)) > SpectrumCodec.FLOOR_LINEAR) {
+                    survived++
+                }
+            }
+        }
+        return significant to survived
+    }
+
+    // --- the decoded-linear consequence, measured rather than asserted away ----------------------
+
+    @Test
+    fun `decoded linear error is recorded, and matches the dB propagation identity`() {
+        // PERFORMANCE.md §1.4. §17.4.1 states plainly that 4.9e-4 does not carry over to the
+        // decoded linear magnitude below −16 dBFS. That is a property of any dB representation,
+        // so it is measured and recorded rather than hidden behind a loosened bound.
+        //
+        // The bound asserted is the exact propagation identity rather than a figure derived from
+        // 0.0625 dB: a dB error of Δ becomes a linear relative error of 10^(Δ/20) − 1, checked
+        // per bin against that bin's own quantisation error. A bound computed from the FP16
+        // half-ULP alone is very slightly too tight, because `toDb` narrows its Double result to
+        // Float before quantisation, so the total dB error can exceed a pure half-ULP by that
+        // Float rounding (~1e-5 near the floor). The identity has no such gap.
+        //
+        // FLOAT_SLACK covers only the final narrowing of the decoded value: Float's own relative
+        // step, 2⁻²⁴ ≈ 6e-8.
+        // The dB error is taken against the *exact* Double logarithm, not against `toDb`'s
+        // already-narrowed Float: the narrowing is one of the roundings the decoded value
+        // carries, so measuring from the Float would leave it out of the identity and the bound
+        // would be a hair too tight. FLOAT_SLACK then covers only the final narrowing of the
+        // decoded magnitude — Float's relative step, 2⁻²⁴ ≈ 6e-8.
+        val floatSlack = 1e-6
+        val report = StringBuilder("\n=== PERFORMANCE.md §1.4 — decoded linear relative error ===\n")
+        var worstResidual = 0.0
+        Fixtures.all(frames = 9_600).forEach { fixture ->
+            var worstLinear = 0.0
+            var worstDb = 0.0
+            spectraOf(fixture).forEach { spectrum ->
+                spectrum.forEach { magnitude ->
+                    if (magnitude <= SpectrumCodec.FLOOR_LINEAR) return@forEach
+                    val exactDb = 20.0 * kotlin.math.log10(magnitude.toDouble())
+                    val storedDb = Fp16.toFloat(SpectrumCodec.encode(magnitude)).toDouble()
+                    val dbError = abs(storedDb - exactDb)
+                    val linearError = SpectrumCodec.linearRelativeError(magnitude)
+
+                    val residual = linearError - (Math.pow(10.0, dbError / 20.0) - 1.0)
+                    assertTrue(
+                        "${fixture.name}: linear $linearError exceeds identity for dB $dbError",
+                        residual <= floatSlack,
+                    )
+                    worstResidual = maxOf(worstResidual, residual)
+                    worstLinear = maxOf(worstLinear, linearError)
+                    worstDb = maxOf(worstDb, dbError)
+                }
+            }
+            report.append(
+                "| %-14s | %.3e | from %.5f dB |\n".format(fixture.name, worstLinear, worstDb),
+            )
+        }
+        report.append("worst residual against the identity: %.3e\n".format(worstResidual))
+        println(report)
+    }
+
+    // --- format invariants -----------------------------------------------------------------------
+
+    @Test
+    fun `the clipping fixture does not overflow the representation`() {
+        // Magnitudes above 1.0 are positive dBFS. They must survive rather than saturate.
+        val spectra = spectraOf(Fixtures.clipping(9_600))
+        val peak = spectra.maxOf { it.max() }
+        assertTrue("clipping peak $peak should exceed full scale", peak > 1.0f)
+        val round = SpectrumCodec.decode(SpectrumCodec.encode(peak))
+        assertEquals(peak.toDouble(), round.toDouble(), peak * 1e-2)
+        assertTrue(!round.isInfinite())
     }
 
     @Test
     fun `quantisation preserves ordering within a frame`() {
-        // What a reactive mapping actually depends on: if bin A is louder than bin B before
-        // storage, it must not be quieter after. Ties are permitted — that is quantisation — but
-        // an inversion is not.
+        // A monotone codec is what lets a reader compare two stored bins without decoding both.
+        // log10 is monotone and FP16 rounding is monotone, so the composition must be too.
         Fixtures.all(frames = 4_800).forEach { fixture ->
             spectraOf(fixture).take(20).forEach { spectrum ->
-                for (index in 1 until spectrum.size) {
-                    val a = spectrum[index - 1]
-                    val b = spectrum[index]
-                    val qa = Fp16.quantise(a)
-                    val qb = Fp16.quantise(b)
-                    if (a < b) {
-                        assertTrue("${fixture.name}: $a < $b but $qa > $qb", qa <= qb)
-                    }
+                for (index in 0 until spectrum.size - 1) {
+                    val a = spectrum[index]
+                    val b = spectrum[index + 1]
+                    if (a <= SpectrumCodec.FLOOR_LINEAR || b <= SpectrumCodec.FLOOR_LINEAR) continue
+                    val qa = SpectrumCodec.decode(SpectrumCodec.encode(a))
+                    val qb = SpectrumCodec.decode(SpectrumCodec.encode(b))
+                    if (a < b) assertTrue("${fixture.name}: $a<$b but $qa>$qb", qa <= qb)
+                    if (a > b) assertTrue("${fixture.name}: $a>$b but $qa<$qb", qa >= qb)
                 }
             }
         }
@@ -221,54 +249,64 @@ class Fp16PrecisionTest {
     fun `a spectrum round-trips through the cache within the documented tolerance`() {
         val fixture = Fixtures.drums(9_600)
         val spectra = spectraOf(fixture)
-        val binCount = stage.retainedBinCount
+        val entry = entryFor(spectra)
 
-        val halves = ShortArray(spectra.size * binCount)
-        spectra.forEachIndexed { frame, spectrum ->
-            spectrum.forEachIndexed { bin, value -> halves[frame * binCount + bin] = Fp16.fromFloat(value) }
+        val out = FloatArray(stage.retainedBinCount)
+        var worstDb = 0.0
+        spectra.indices.forEach { index ->
+            assertTrue("frame $index unreadable", entry.spectrumFrame(index.toLong(), out))
+            for (bin in out.indices) {
+                val original = SpectrumCodec.toDb(spectra[index][bin])
+                worstDb = maxOf(worstDb, abs(SpectrumCodec.toDb(out[bin]) - original).toDouble())
+            }
         }
+        assertTrue("cache round trip worst dB error $worstDb", worstDb <= dbTolerance)
+    }
 
-        val entry = AnalysisCacheEntry(
-            key = AnalysisConfig().cacheKeyFor(AssetHash("d".repeat(64))),
+    @Test
+    fun `the cache stores dB values, not linear magnitudes`() {
+        // The concrete regression the formatVersion bump exists to prevent. A reader that decodes
+        // the payload with a plain Fp16.toFloat gets numbers near −160, not magnitudes near 0…1.
+        // If this ever passes with the naive decode, the payload has silently reverted to linear.
+        val spectra = spectraOf(Fixtures.sine440(9_600, amplitude = 0.5f))
+
+        // Asserted against the payload the encoder produces, rather than by reaching into the
+        // cache's internals: widening a production API so a test can look inside it is how the
+        // internal becomes load-bearing.
+        val raw = halvesFor(spectra)
+        val naive = raw.map { Fp16.toFloat(it) }
+        assertTrue("no stored value is a dBFS number", naive.any { it < -1.0f })
+        assertTrue("a linear payload would have no negatives", naive.count { it < 0.0f } > raw.size / 2)
+
+        // And the decode side undoes it, so a reader still sees magnitudes.
+        val out = FloatArray(stage.retainedBinCount)
+        assertTrue(entryFor(spectra).spectrumFrame(0L, out))
+        assertTrue("decoded magnitudes must be non-negative", out.all { it >= 0.0f })
+    }
+
+    /** §17.4.1's encoded payload for a whole track, frame-major, exactly as the cache stores it. */
+    private fun halvesFor(spectra: List<FloatArray>): ShortArray {
+        val bins = stage.retainedBinCount
+        return ShortArray(spectra.size * bins).also { halves ->
+            spectra.forEachIndexed { index, spectrum ->
+                SpectrumCodec.encodeFrame(spectrum, halves, index * bins)
+            }
+        }
+    }
+
+    private fun entryFor(spectra: List<FloatArray>): AnalysisCacheEntry {
+        val bins = stage.retainedBinCount
+        val halves = halvesFor(spectra)
+        return AnalysisCacheEntry(
+            key = AnalysisCacheKey(AssetHash("a".repeat(64)), AnalysisConfig().hash()),
             framing = AnalysisFraming.CANONICAL,
             frameCount = spectra.size.toLong(),
             trackPeakEnergy = 1.0f,
             sourceSampleRateHz = 48_000,
             sourceChannelCount = 1,
-        )
-        entry.stageSpectrum(AnalysisStage.SCALAR_ENVELOPE, binCount, halves)
-        entry.publishAtomic(AnalysisStage.SCALAR_ENVELOPE)
-
-        val readBack = FloatArray(binCount)
-        spectra.indices.forEach { frame ->
-            assertTrue(entry.spectrumFrame(frame.toLong(), readBack))
-            spectra[frame].indices.forEach { bin ->
-                val original = spectra[frame][bin]
-                if (original >= Fp16.MIN_NORMAL) {
-                    val error = kotlin.math.abs((readBack[bin] - original) / original)
-                    assertTrue("frame $frame bin $bin error $error", error <= normalRangeTolerance)
-                } else {
-                    assertEquals(Fp16.quantise(original), readBack[bin])
-                }
-            }
+        ).also {
+            it.stageSpectrum(AnalysisStage.SPECTRUM, bins, halves)
+            it.advanceTo(AnalysisStage.SPECTRUM, spectra.size - 1L)
         }
-    }
-
-    @Test
-    fun `an unpublished spectrum is not readable`() {
-        // §17.7 clause 3 applies to the spectrum exactly as to the scalars.
-        val entry = AnalysisCacheEntry(
-            key = AnalysisConfig().cacheKeyFor(AssetHash("e".repeat(64))),
-            framing = AnalysisFraming.CANONICAL,
-            frameCount = 4,
-            trackPeakEnergy = 1.0f,
-            sourceSampleRateHz = 48_000,
-            sourceChannelCount = 1,
-        )
-        entry.stageSpectrum(AnalysisStage.SCALAR_ENVELOPE, 8, ShortArray(32))
-        assertTrue(!entry.spectrumFrame(0, FloatArray(8)))
-
-        entry.publishAtomic(AnalysisStage.SCALAR_ENVELOPE)
-        assertTrue(entry.spectrumFrame(0, FloatArray(8)))
     }
 }

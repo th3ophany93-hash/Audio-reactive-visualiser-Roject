@@ -33,11 +33,20 @@ internal object AnalysisCacheFormat {
     /**
      * §18.3's `formatVersion`.
      *
-     * Bumped to 2 when §17.4's retained spectrum was added in Step 10. The layout changed, so a
-     * version-1 file is rejected and regenerated rather than read — which is exactly what the
-     * field exists for, and cost nothing here because no version-1 file has ever been shipped.
+     * | Version | Change |
+     * |---|---|
+     * | 1 | Initial layout. |
+     * | 2 | §17.4's retained spectrum added (Step 10), stored as linear magnitudes. |
+     * | 3 | §17.4.1 [D-7]: the spectrum payload is **dBFS**, not linear magnitude. |
+     *
+     * Version 3 is a **semantic** change to an unchanged layout, which is the dangerous kind: a
+     * version-2 file parses perfectly as version 3 and yields magnitudes near −160 where the
+     * reader expects values near 0…1. Nothing about the byte structure would catch it. The
+     * version check is therefore the *only* thing standing between a stale file and silently
+     * corrupt analysis, which is why §18.3's rule is enforced literally — an unknown or
+     * non-matching version is rejected, deleted and regenerated, with no speculative migration.
      */
-    const val FORMAT_VERSION: Int = 2
+    const val FORMAT_VERSION: Int = 3
 
     private const val MAX_FEATURES = 256
     private const val MAX_FRAMES = 1L shl 32
@@ -61,14 +70,19 @@ internal object AnalysisCacheFormat {
             out.writeFloat(entry.trackPeakEnergy)
 
             val staged = entry.stagedFeatures()
-            val stages = staged.values.distinct()
+            // The spectrum's stage must be in the marker set even when it has no scalar features
+            // of its own. Deriving the set from `stagedFeatures()` alone loses it: stage 3 stores
+            // a spectrum and, on its own, no features — so its marker was never written, and the
+            // reloaded entry treated a fully persisted spectrum as unpublished and refused to
+            // read it back. Silent, and invisible to any test that did not persist and reload.
+            val stages = (staged.values + listOfNotNull(entry.spectrumStageOrNull())).distinct()
             out.writeInt(stages.size)
             stages.forEach { stage ->
                 out.writeUTF(stage.name)
                 out.writeLong(entry.progressOf(stage).highestCompleteIndex)
             }
 
-            // §17.4's retained spectrum, as raw binary16 bit patterns.
+            // §17.4.1's retained spectrum, as raw binary16 bit patterns of dBFS values.
             val spectrum = entry.rawSpectrum()
             if (spectrum == null) {
                 out.writeInt(0)

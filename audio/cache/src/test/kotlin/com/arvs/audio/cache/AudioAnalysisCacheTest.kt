@@ -9,8 +9,11 @@ import com.arvs.core.model.AnalysisConfigHash
 import com.arvs.core.model.AnalysisStage
 import com.arvs.core.model.AssetHash
 import com.arvs.core.model.FeatureId
+import com.arvs.core.model.Fp16
+import com.arvs.core.model.SpectrumCodec
 import com.arvs.core.time.AnalysisFraming
 import com.arvs.core.time.AudioSourceTime
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -208,6 +211,117 @@ class AudioAnalysisCacheTest {
         }
     }
 
+    // --- §17.4.1 retained spectrum ---------------------------------------------------------------
+
+    @Test
+    fun `the retained spectrum round-trips through the dB codec`() {
+        // This module owns the decode, so it owns the test. Magnitudes span eight orders of
+        // magnitude, including values far below binary16's linear subnormal floor: under a
+        // linear payload the quiet end collapses to zero, which is the whole reason §17.4.1
+        // exists.
+        val bins = 4
+        val frames = 3L
+        val magnitudes = floatArrayOf(
+            1.0f, 0.5f, 1e-2f, 1e-4f,
+            0.25f, 1e-3f, 1e-5f, 1e-6f,
+            0.125f, 1e-6f, 1e-7f, 3e-8f,
+        )
+        val halves = ShortArray(magnitudes.size)
+        SpectrumCodec.encodeFrame(magnitudes, halves, 0)
+
+        val entry = entry(frames = frames)
+        entry.stageSpectrum(AnalysisStage.SPECTRUM, bins, halves)
+        entry.advanceTo(AnalysisStage.SPECTRUM, frames - 1)
+
+        val out = FloatArray(bins)
+        for (frame in 0 until frames) {
+            assertTrue(entry.spectrumFrame(frame, out))
+            for (bin in 0 until bins) {
+                val expected = magnitudes[(frame * bins + bin).toInt()]
+                assertEquals(
+                    "frame $frame bin $bin",
+                    expected.toDouble(),
+                    out[bin].toDouble(),
+                    expected * 1e-2,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the spectrum payload is dB, so a linear decode would be visibly wrong`() {
+        // The regression the formatVersion bump exists to catch, asserted where the decode lives.
+        // Decoding a dBFS payload as a linear magnitude yields numbers near −160; decoding it
+        // correctly yields the magnitude back. A test that used the codec on both sides would be
+        // blind to the swap, so the expectation here is a literal magnitude.
+        val bins = 2
+        val halves = ShortArray(2)
+        SpectrumCodec.encodeFrame(floatArrayOf(0.5f, 1e-6f), halves, 0)
+
+        // The stored bits, read naively, are dBFS: about −6 and −120.
+        assertEquals(-6.0, Fp16.toFloat(halves[0]).toDouble(), 0.1)
+        assertEquals(-120.0, Fp16.toFloat(halves[1]).toDouble(), 0.5)
+
+        val entry = entry(frames = 1)
+        entry.stageSpectrum(AnalysisStage.SPECTRUM, bins, halves)
+        entry.advanceTo(AnalysisStage.SPECTRUM, 0)
+
+        val out = FloatArray(bins)
+        assertTrue(entry.spectrumFrame(0, out))
+        assertEquals(0.5, out[0].toDouble(), 5e-3)
+        assertEquals(1e-6, out[1].toDouble(), 1e-8)
+        assertTrue("a linear decode would give negatives", out.all { it > 0.0f })
+    }
+
+    @Test
+    fun `a spectrum is invisible until its stage is published, and never past the marker`() {
+        // §17.7's visibility rules apply to the spectrum exactly as to the scalars, so it can
+        // never be observed ahead of the frames it was measured alongside.
+        val entry = entry(frames = 10)
+        val halves = ShortArray(10 * 2)
+        SpectrumCodec.encodeFrame(FloatArray(20) { 0.5f }, halves, 0)
+        entry.stageSpectrum(AnalysisStage.SPECTRUM, 2, halves)
+
+        val out = FloatArray(2)
+        assertTrue("unpublished must not be readable", !entry.spectrumFrame(0, out))
+
+        entry.advanceTo(AnalysisStage.SPECTRUM, 4)
+        assertTrue(entry.spectrumFrame(4, out))
+        assertTrue("past the marker must not be readable", !entry.spectrumFrame(5, out))
+        assertTrue("negative frame must not be readable", !entry.spectrumFrame(-1, out))
+    }
+
+    @Test
+    fun `a persisted spectrum survives a reload byte-identically`() {
+        val bins = 8
+        val frames = 6L
+        val magnitudes = FloatArray((frames * bins).toInt()) { 1.0f / (it + 1) }
+        val halves = ShortArray(magnitudes.size)
+        SpectrumCodec.encodeFrame(magnitudes, halves, 0)
+
+        val store = cache()
+        val entry = entry(frames = frames)
+        entry.stageFeature(AnalysisStage.SCALAR_ENVELOPE, FeatureId.RMS, FloatArray(frames.toInt()))
+        entry.publishAtomic(AnalysisStage.SCALAR_ENVELOPE)
+        entry.stageSpectrum(AnalysisStage.SPECTRUM, bins, halves)
+        entry.advanceTo(AnalysisStage.SPECTRUM, frames - 1)
+        store.persist(entry)
+
+        val reloaded = AudioAnalysisCache(temporaryFolder.root, logger).entry(key())
+        assertNotNull(reloaded)
+        assertEquals(bins, reloaded!!.spectrumBinCount)
+        assertTrue(reloaded.hasSpectrum())
+
+        val before = FloatArray(bins)
+        val after = FloatArray(bins)
+        for (frame in 0 until frames) {
+            assertTrue(entry.spectrumFrame(frame, before))
+            assertTrue(reloaded.spectrumFrame(frame, after))
+            // Bit-identical, not merely close: the payload is copied, never recomputed.
+            assertArrayEquals("frame $frame", before, after, 0.0f)
+        }
+    }
+
     // --- §18.3 format discipline --------------------------------------------------------------
 
     @Test
@@ -229,7 +343,29 @@ class AudioAnalysisCacheTest {
         // other test in this file — a mutation lowering it back to 1 for the version-2 layout
         // passed until this assertion existed. §18.3 makes the version the mechanism by which a
         // layout change invalidates existing entries; it has to be asserted directly.
-        assertEquals(2, AnalysisCacheFormat.FORMAT_VERSION)
+        //
+        // 3 is §17.4.1 [D-7]'s dB-domain spectrum payload.
+        assertEquals(3, AnalysisCacheFormat.FORMAT_VERSION)
+    }
+
+    @Test
+    fun `version 1 and version 2 payloads are rejected, never read as version 3`() {
+        // §17.4.1's binding requirement. Version 2 is the dangerous one: its layout is *identical*
+        // to version 3 and only the meaning of the spectrum payload changed — linear magnitude
+        // versus dBFS. It parses perfectly and yields magnitudes near −160 where the reader
+        // expects 0…1, and no structural check would ever notice. The version field is the only
+        // thing standing between a stale file and silently corrupt analysis.
+        listOf(1, 2).forEach { stale ->
+            val store = cache()
+            store.persist(stagedEntry().also { it.publishAtomic(AnalysisStage.SCALAR_ENVELOPE) })
+            val file = store.fileFor(key())
+            writeHeader(file, AnalysisCacheFormat.MAGIC, version = stale)
+
+            val fresh = AudioAnalysisCache(temporaryFolder.root, logger)
+            assertNull("version $stale must not be read", fresh.entry(key()))
+            assertTrue("version $stale must be deleted, not migrated", !file.exists())
+            assertTrue(sink.snapshot().any { it.key == "cache-format-rejected" })
+        }
     }
 
     @Test
