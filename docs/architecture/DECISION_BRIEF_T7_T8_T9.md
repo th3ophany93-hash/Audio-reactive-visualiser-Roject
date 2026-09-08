@@ -1,6 +1,12 @@
 # Decision Brief — T-7, T-8, T-9
 
-**Status: T-7 OPEN · T-8 OPEN · T-9 awaiting confirmation. Nothing here is ratified.**
+**Status: RATIFIED. T-7 → D-4 · T-8 → D-5 · T-9 → D-3.**
+
+The Project Owner ratified all three after this brief. The recommendations were accepted as
+written. The binding definitions now live in **MASTER_SPECIFICATION_v3.0 §17.6**; the decision
+records and the pending cache-contract review are in PHASE_1_IMPLEMENTATION_PLAN.md §18. This
+document is retained as the reasoning behind the decisions, not as their statement — where it
+differs from §17.6, §17.6 governs.
 
 Prepared after Step 8. No implementation, cache format, project format or golden vector was
 modified in preparing it. Sources are quoted verbatim from `MASTER_SPECIFICATION_v3.0.md`.
@@ -245,4 +251,6 @@ resolution unblocks nothing else, so it can be confirmed at any time.
 | **T-8** | Full definition of Loudness Approximation | **No** — the filtered signal is unrecoverable from a stored frame | **Yes** |
 | **T-9** | Confirm `E = Σx²` | **Yes** — constant factor, read-time transform | No |
 
-T-7 and T-8 both remain **OPEN**. Nothing in this brief has been applied.
+T-7 and T-8 were ratified as recommended (D-4, D-5); T-9 was confirmed (D-3). The
+normative record is updated; the resulting **code** changes are listed in the plan's
+cache-contract review and are deliberately not applied.

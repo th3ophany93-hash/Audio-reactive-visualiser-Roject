@@ -365,7 +365,7 @@ Custom: Arbitrary frequency band.
 > - **Concrete bin mapping** (the arithmetic meaning of "1024 bins" for the default 2048-point FFT at 48 kHz): a real FFT of a 2048-sample window yields 1025 unique bins (DC through Nyquist). The retained set is **bins 1…1024**; the DC bin (0 Hz) is discarded, as it carries no musical information and is contaminated by DC offset. Retained coverage is 23.4375 Hz … 24,000 Hz.
 > - **Magnitude scaling:** magnitudes are normalized against the canonical signal's full-scale reference before FP16 conversion. FP16 carries a 10-bit mantissa (~3 decimal digits); §119's "very quiet signal" fixture is the designated test for whether that precision holds at low amplitude. Should the tolerance tests below show it does not, the documented fallback is a dB-domain variant, which is a **format** change and therefore requires a `formatVersion` bump (§18.3) — not a silent reinterpretation.
 >
-> **Stored separately (computed during analysis at full float32 precision, then stored):** RMS, Peak, Energy, Normalized Energy, Loudness Approximation, Spectral Centroid, Spectral Flux, Spectral Rolloff, Spectral Flatness, Chroma, Onset strength, Beat probability, Beat phase, Tempo, and the §20 **default** band set. These are stored rather than derived because computing them from the reduced FP16 spectrum at read time would be both less accurate and more expensive than computing them once from the full-precision spectrum during analysis.
+> **Stored separately (computed during analysis at full float32 precision, then stored):** RMS, Peak, Energy, Normalized Energy, Loudness Approximation — the last three defined normatively in §17.6, which also requires Normalized Energy's track-relative reference to be stored as immutable cache metadata — Spectral Centroid, Spectral Flux, Spectral Rolloff, Spectral Flatness, Chroma, Onset strength, Beat probability, Beat phase, Tempo, and the §20 **default** band set. These are stored rather than derived because computing them from the reduced FP16 spectrum at read time would be both less accurate and more expensive than computing them once from the full-precision spectrum during analysis.
 >
 > **Derived at read time from the retained spectrum (never re-analyzed):**
 > - **Arbitrary/custom frequency bands (§20).** Binding: a custom band **must** be derivable from the retained spectrum **without re-running the FFT and without re-decoding the source**. §22.2's per-frame source deduplication computes each unique custom band once per frame.
@@ -398,6 +398,86 @@ Custom: Arbitrary frequency band.
 
 
 
+#### 17.6 Scalar Feature Definitions — Energy, Normalized Energy, Loudness Approximation
+
+> **[RESOLVED — T-9, T-7, T-8]** §17 requires Energy, Normalized Energy and Loudness Approximation
+> as global features and §17.4 requires all three to be **stored**, but v3.0 defined none of them.
+> This section is that definition and is normative. Throughout, `x` is the §17.3 canonical mono
+> signal, `N = 2048` is the §17.5 analysis window, and `n` indexes the §17.5 analysis frames on
+> §17.2's 100 Hz timeline.
+>
+> **Energy [T-9].**
+>
+> ```
+> Energy[n] = Σ x²   over the 2048-sample analysis frame n
+> ```
+>
+> The sum-of-squares convention, not mean square. Because `N` is fixed by §17.5, the two
+> conventions interconvert exactly (`mean = Energy / 2048`) as a read-time transform, so this
+> choice is reversible without re-analysis. Recorded so the convention is a decision rather than
+> an accident.
+>
+> **Normalized Energy [T-7].**
+>
+> ```
+> NormalizedEnergy[n] = Energy[n] / max_m Energy[m]        (maximum over the whole track)
+> ```
+>
+> The reference is **track-relative**, which makes the feature invariant to source gain: scaling
+> `x` by `k` scales every `Energy` by `k²` and leaves the ratio unchanged. This is what
+> distinguishes Normalized Energy from Energy as a separate §17 feature — an absolute full-scale
+> reference would make it exactly `RMS²`, a unit change rather than a second measurement.
+>
+> Two binding consequences:
+>
+> - **The reference must be finalized before cache publication.** `max_m Energy[m]` is computed by
+>   a whole-track pass that completes before any stage-2 frame is published. **Incremental
+>   refinement of the reference is forbidden**: a running maximum that grows during analysis would
+>   make every already-written frame wrong, and revising written frames contradicts §18.1's
+>   "immutable-once-written and append-only" contract.
+> - **The reference is stored as immutable cache metadata.** It is written once, in the cache
+>   header, and never updated. Storing it keeps the value auditable and lets a reader recover raw
+>   `Energy` from a stored ratio; a bare ratio would not.
+>
+> **Note the deliberate asymmetry with §17.4.** §17.4 normalizes retained *spectral magnitudes*
+> against "the canonical signal's full-scale reference" — an **absolute** reference. Normalized
+> Energy uses a **track-relative** one. The two references are different by design and must not be
+> conflated when comparing features.
+>
+> **Loudness Approximation [T-8].**
+>
+> ```
+> Loudness[n] = max( −70.0 ,  −0.691 + 10·log₁₀( (1/N) · Σ y² ) )     over analysis frame n
+> ```
+>
+> where `y` is the §17.3 canonical mono signal after the ITU-R BS.1770 **K-weighting** pre-filter
+> (high-shelf followed by RLB high-pass). The ratified parameters are:
+>
+> | Parameter | Ratified value |
+> |---|---|
+> | Weighting | **K-weighting** (BS.1770 shelf + RLB high-pass) |
+> | Gating | **None** (ungated) |
+> | Measurement window | **Per analysis frame** — the §17.5 framing, natively at 100 Hz |
+> | Channel basis | **Canonical mono** (§17.3) |
+> | Output units | **dBFS** |
+> | Silence floor | **−70.0 dB** |
+> | Loudness target normalization | **None** |
+>
+> Every parameter above is fixed here and is therefore *not* a configurable input. Because §17.3
+> fixes the analysis rate at 48 kHz, the K-weighting coefficients are the published BS.1770
+> constants — no rate-dependent filter design, and no vendor variation.
+>
+> The definition is deliberately **causal and per-frame**: each value depends only on its own frame
+> plus a fixed filter state, so §18.1's immutability and §17.1's progressive stage order hold with
+> no prepass, and the value lands natively on §17.2's 100 Hz timeline with no realignment. It is
+> BS.1770's momentary measure without the 400 ms window and without gating — an *approximation*,
+> exactly as §17 names it. Measuring on a mono downmix is likewise approximate by construction:
+> BS.1770 defines per-channel weights for multichannel material, and §17.3 fixes analysis to mono.
+>
+> **No loudness target participates in analysis.** There is no target level, no `targetLufs`, and
+> no gain applied to reach one. Any such parameter is outside this specification and **must not**
+> be a member of `analysisConfigHash` (§18.2 item 8).
+
 ### 18. AUDIO ANALYSIS CACHE
 
 Create reusable `AudioAnalysisCache`. Store: `timestamp, RMS, Peak, FFT, Bands, Onset, Beat, Centroid, Flux, Chroma`. Prefer efficient binary storage for large analysis data.
@@ -426,7 +506,7 @@ Changing image position MUST NOT invalidate analysis. Changing effect blur MUST 
 > 5. Analysis hop (§17.5) — canonically 480 samples. A distinct input from FFT size and from frame rate; overlap is derived from window and hop and is never itself an input.
 > 6. Analysis frame rate (§17.5) — canonically 100 Hz, matching §17.2's storage timeline.
 > 7. **Default** frequency-band definitions (§20) — i.e. the band set whose values are *stored*.
-> 8. Normalization algorithm and configuration (§19, §106 "Normalization").
+> 8. Normalization algorithm and configuration (§19, §106 "Normalization"). Per §17.6 [T-8] no loudness *target* exists, so no target level may be a member; the Loudness Approximation parameters are fixed by §17.6 rather than configured.
 > 9. Beat-analysis configuration (§21, §106 "Beat detection").
 > 10. Analysis-quality level (§106 "Analysis quality").
 > 11. Analysis algorithm/schema version — covering resampler coefficients, window-function implementation, and any DSP change that alters output for identical input.
