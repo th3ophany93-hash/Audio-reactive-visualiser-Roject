@@ -3,6 +3,7 @@ package com.arvs.audio.cache
 import com.arvs.core.model.AnalysisCacheKey
 import com.arvs.core.model.AnalysisStage
 import com.arvs.core.model.FeatureId
+import com.arvs.core.model.Fp16
 import com.arvs.core.time.AnalysisFraming
 import com.arvs.core.time.AudioSourceTime
 import java.util.concurrent.atomic.AtomicLongArray
@@ -35,6 +36,20 @@ public class AnalysisCacheEntry(
 ) {
     private val features = LinkedHashMap<FeatureId, FloatArray>()
     private val featureStage = LinkedHashMap<FeatureId, AnalysisStage>()
+
+    /**
+     * §17.4's retained spectrum: `frameCount × binCount` binary16 magnitudes, flattened.
+     *
+     * Held as a `ShortArray` of raw FP16 bit patterns rather than as floats. That is the point of
+     * §17.4's format: 1024 bins × 2 bytes × 100 Hz is ≈200 KiB/s, and storing them as floats would
+     * double the cache's dominant cost for precision §17.4 has already decided against.
+     */
+    private var spectrumHalves: ShortArray? = null
+    private var spectrumStage: AnalysisStage? = null
+
+    /** Bins per frame in the retained spectrum, or 0 if none is staged. §17.4 fixes this at 1024. */
+    public var spectrumBinCount: Int = 0
+        private set
 
     /**
      * Per-stage markers (§17.7 clause 5) — one slot per [AnalysisStage], `AtomicLongArray` giving
@@ -94,6 +109,53 @@ public class AnalysisCacheEntry(
         }
         markers.set(stage.ordinal, highestCompleteIndex)
     }
+
+    /**
+     * Stages §17.4's retained spectrum. Like [stageFeature], invisible until [publishAtomic].
+     *
+     * [halves] holds raw binary16 bit patterns, frame-major: frame `n`'s bins occupy
+     * `[n·binCount, (n+1)·binCount)`.
+     */
+    public fun stageSpectrum(stage: AnalysisStage, binCount: Int, halves: ShortArray) {
+        require(binCount > 0) { "binCount must be positive: $binCount" }
+        require(halves.size.toLong() == frameCount * binCount) {
+            "spectrum must be $frameCount × $binCount = ${frameCount * binCount} values, got ${halves.size}"
+        }
+        check(markers.get(stage.ordinal) == StageProgress.NOT_PUBLISHED) {
+            "${stage.name} is already published; §17.7 clause 7 forbids revising it"
+        }
+        spectrumHalves = halves
+        spectrumStage = stage
+        spectrumBinCount = binCount
+    }
+
+    /**
+     * Reads one frame of the retained spectrum, decoding binary16 to float.
+     *
+     * Returns false when no spectrum is staged, when its stage is unpublished, or when the frame
+     * is past that stage's marker — the same visibility rules [read] applies, so the spectrum can
+     * never be observed ahead of the scalars it was measured alongside.
+     */
+    public fun spectrumFrame(frameIndex: Long, into: FloatArray): Boolean {
+        val halves = spectrumHalves ?: return false
+        val stage = spectrumStage ?: return false
+        require(into.size == spectrumBinCount) {
+            "spectrum buffer must be $spectrumBinCount bins, got ${into.size}"
+        }
+        val marker = markers.get(stage.ordinal)
+        if (marker == StageProgress.NOT_PUBLISHED) return false
+        if (frameIndex < 0 || frameIndex > marker) return false
+
+        val base = (frameIndex * spectrumBinCount).toInt()
+        for (bin in 0 until spectrumBinCount) into[bin] = Fp16.toFloat(halves[base + bin])
+        return true
+    }
+
+    public fun hasSpectrum(): Boolean = spectrumHalves != null
+
+    internal fun rawSpectrum(): ShortArray? = spectrumHalves
+
+    internal fun spectrumStageOrNull(): AnalysisStage? = spectrumStage
 
     public fun progressOf(stage: AnalysisStage): StageProgress =
         StageProgress(stage, markers.get(stage.ordinal), frameCount)

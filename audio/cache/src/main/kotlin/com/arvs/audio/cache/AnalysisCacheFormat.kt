@@ -30,10 +30,19 @@ internal object AnalysisCacheFormat {
     const val MAGIC: Long = 0x4152565341434845L
 
     /** §18.3's `formatVersion`, independent of `analysisConfigHash`. */
-    const val FORMAT_VERSION: Int = 1
+    /**
+     * §18.3's `formatVersion`.
+     *
+     * Bumped to 2 when §17.4's retained spectrum was added in Step 10. The layout changed, so a
+     * version-1 file is rejected and regenerated rather than read — which is exactly what the
+     * field exists for, and cost nothing here because no version-1 file has ever been shipped.
+     */
+    const val FORMAT_VERSION: Int = 2
 
     private const val MAX_FEATURES = 256
     private const val MAX_FRAMES = 1L shl 32
+    private const val MAX_SPECTRUM_BINS = 1 shl 16
+    private const val MAX_SPECTRUM_VALUES = 1L shl 34
 
     fun write(file: File, entry: AnalysisCacheEntry) {
         DataOutputStream(file.outputStream().buffered()).use { out ->
@@ -57,6 +66,16 @@ internal object AnalysisCacheFormat {
             stages.forEach { stage ->
                 out.writeUTF(stage.name)
                 out.writeLong(entry.progressOf(stage).highestCompleteIndex)
+            }
+
+            // §17.4's retained spectrum, as raw binary16 bit patterns.
+            val spectrum = entry.rawSpectrum()
+            if (spectrum == null) {
+                out.writeInt(0)
+            } else {
+                out.writeInt(entry.spectrumBinCount)
+                out.writeUTF(entry.spectrumStageOrNull()!!.name)
+                for (half in spectrum) out.writeShort(half.toInt())
             }
 
             out.writeInt(staged.size)
@@ -120,6 +139,22 @@ internal object AnalysisCacheFormat {
                 val stage = AnalysisStage.entries.firstOrNull { it.name == stageName }
                     ?: throw CacheFormatRejectedException("unknown analysis stage '$stageName' in header")
                 markers[stage] = input.readLong()
+            }
+
+            val spectrumBinCount = input.readInt()
+            if (spectrumBinCount < 0 || spectrumBinCount > MAX_SPECTRUM_BINS) {
+                throw CacheFormatRejectedException("implausible spectrum bin count $spectrumBinCount")
+            }
+            if (spectrumBinCount > 0) {
+                val stageName = input.readUTF()
+                val stage = AnalysisStage.entries.firstOrNull { it.name == stageName }
+                    ?: throw CacheFormatRejectedException("unknown spectrum stage '$stageName'")
+                val total = frameCount * spectrumBinCount
+                if (total > MAX_SPECTRUM_VALUES) {
+                    throw CacheFormatRejectedException("implausible spectrum size $total")
+                }
+                val halves = ShortArray(total.toInt()) { input.readShort() }
+                entry.stageSpectrum(stage, spectrumBinCount, halves)
             }
 
             val featureCount = input.readInt()

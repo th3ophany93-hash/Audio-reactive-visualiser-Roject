@@ -224,6 +224,15 @@ class AudioAnalysisCacheTest {
     }
 
     @Test
+    fun `the format version is pinned at its ratified value`() {
+        // Both sides of a round-trip use the same constant, so changing it is invisible to every
+        // other test in this file — a mutation lowering it back to 1 for the version-2 layout
+        // passed until this assertion existed. §18.3 makes the version the mechanism by which a
+        // layout change invalidates existing entries; it has to be asserted directly.
+        assertEquals(2, AnalysisCacheFormat.FORMAT_VERSION)
+    }
+
+    @Test
     fun `a foreign magic is rejected without parsing`() {
         val store = cache()
         store.persist(stagedEntry().also { it.publishAtomic(AnalysisStage.SCALAR_ENVELOPE) })
