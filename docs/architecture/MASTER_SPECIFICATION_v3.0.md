@@ -747,7 +747,35 @@ Expose: `beatConfidence, beatPhase, tempo, onsetStrength`. Do not assume all mus
 > **1.0 second** threshold history window ending at `t`. Median/MAD rather than mean/σ because a
 > transient is precisely the outlier a mean-based threshold would absorb into its own estimate.
 >
-> **Beat candidate.** A frame `t` is a confirmed beat if and only if **all** of:
+> **Frame eligibility (normative — [RESOLVED — D-10, discharges T-16]).** Beat detection may
+> evaluate a frame **only** if that frame's analysis window is **fully backed by real source audio
+> samples**. A frame whose §17.5 window extends beyond the source audio duration is **ineligible**
+> and can never produce a beat event.
+>
+> The zero-padding §17.5 applies to the final windows is an implementation detail of spectral
+> framing. It is **not real audio**, and a beat detector must not treat it as such: the padded
+> window contains a hard truncation of the signal, which smears energy across the spectrum and
+> reads as a large positive flux. Left unguarded this fires a phantom beat, at maximum confidence,
+> at the end of every track. Measured on the §119 sine fixture: flux 0.653 on frame 197 of 200,
+> against 9.8e-05 through the sustained portion.
+>
+> For the canonical §17.5 framing the eligible range is
+>
+> ```
+> lastEligibleFrame = floor((sourceSampleCount − windowSamples) / hopSamples)
+> ```
+>
+> and is empty when the source is shorter than one window. Ineligible frames take no part in
+> detection at all — not as candidates, and not as neighbours in the local-maximum test — because
+> their flux is contaminated by the padding, and a contaminated neighbour could suppress a real
+> beat at the last eligible frame.
+>
+> Three things this clause does **not** license: compensating for the tail by inventing,
+> extrapolating or smoothing synthetic samples; changing §17.5's zero-padding, which stands
+> unaltered for the FFT and spectrum stages; and discarding real beats — every valid beat before
+> the final incomplete window is preserved.
+>
+> **Beat candidate.** An **eligible** frame `t` is a confirmed beat if and only if **all** of:
 >
 > 1. `flux[t] > threshold[t]`;
 > 2. `flux[t]` is a local maximum;
@@ -763,6 +791,28 @@ Expose: `beatConfidence, beatPhase, tempo, onsetStrength`. Do not assume all mus
 >
 > **Beat event.** A beat event shall expose at minimum: `timestamp`, `frameIndex`, `confidence`,
 > `strength`.
+>
+> **Strength (normative — [RESOLVED — D-9, discharges T-15]).**
+>
+> ```
+> BeatEvent.strength = spectralFlux[frameIndex]
+> ```
+>
+> the raw half-wave-rectified spectral-flux value at the detected beat frame. It is **not
+> normalized, not clamped, and not otherwise transformed** — it is the measured transient
+> magnitude as it stands.
+>
+> `strength` and `confidence` are deliberately distinct quantities and neither substitutes for the
+> other:
+>
+> | Field | Meaning | Range |
+> |---|---|---|
+> | `strength` | raw transient magnitude | unbounded, ≥ 0 |
+> | `confidence` | normalized threshold exceedance | [0, 1] |
+>
+> A quiet track and a loud one can both produce `confidence = 1.0`; only `strength` distinguishes
+> them. Clamping or normalizing `strength` would collapse that distinction and leave the two fields
+> carrying the same information.
 >
 > **Tempo.** Tempo estimation is **separate from beat triggering**, and tempo confidence must
 > **never** suppress a valid transient beat — this is the executable form of §21's "do not assume

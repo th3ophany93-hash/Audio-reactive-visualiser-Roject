@@ -102,7 +102,10 @@ class TempoEstimatorTest {
         for (frame in onsets) flux[frame] = 4.0f
 
         val tempo = TempoEstimator.estimate(flux, framing, config)
-        val beats = BeatDetector.detect(flux, framing, config)
+        // Every frame is backed by real audio here, so §21.1 [D-10]'s tail rule is not what
+        // this test is measuring.
+        val samples = (flux.size - 1).toLong() * framing.hopSamples + framing.windowSamples
+        val beats = BeatDetector.detect(flux, samples, framing, config)
 
         assertEquals(onsets.map { it.toLong() }, beats.map { it.frameIndex })
         assertTrue("tempo was $tempo but every beat still fired", beats.size == onsets.size)

@@ -38,9 +38,15 @@ public class BeatStage(
         }
     }
 
-    /** Runs §21.1's detector over an onset signal. */
-    public fun detect(onsetSignal: FloatArray): List<BeatEvent> =
-        BeatDetector.detect(onsetSignal, framing, config)
+    /**
+     * Runs §21.1's detector over an onset signal.
+     *
+     * [sourceSampleCount] is the length of the real source audio in canonical samples. It carries
+     * §21.1 [D-10]'s eligible range and has no default, so a caller cannot omit it and silently
+     * reintroduce the zero-padded tail's phantom beat.
+     */
+    public fun detect(onsetSignal: FloatArray, sourceSampleCount: Long): List<BeatEvent> =
+        BeatDetector.detect(onsetSignal, sourceSampleCount, framing, config)
 
     /**
      * Estimates tempo over an onset signal.

@@ -1,5 +1,6 @@
 package com.arvs.audio.analysis
 
+import com.arvs.audio.beat.BeatDetector
 import com.arvs.core.model.BeatConfig
 import com.arvs.testing.audio.AudioFixture
 import com.arvs.testing.audio.Fixtures
@@ -12,6 +13,21 @@ class BeatStageTest {
 
     private val spectrumStage = SpectrumStage()
     private val stage = BeatStage()
+
+    /**
+     * The real source length in canonical samples, which §21.1 [D-10] needs.
+     *
+     * `CanonicalSignal.frameCount` is the PCM sample count. Deriving it instead from the analysis
+     * framing — `AnalysisFrames.frameCount × hop` — would round *up* to a whole number of hops
+     * and overstate the source by up to `hop − 1` samples, which is exactly enough to make one
+     * padded frame look eligible. The tail rule has to be fed the true length.
+     */
+    private fun sampleCountOf(fixture: AudioFixture): Long =
+        CanonicalSignal.from(fixture.toPcmBuffer(), fixture.format).frameCount.toLong()
+
+    /** Spectra → onset → beats for a whole fixture, with §21.1 [D-10]'s real source length. */
+    private fun beatsOf(fixture: AudioFixture, using: BeatStage = stage) =
+        using.detect(using.onsetSignal(spectraOf(fixture)), sampleCountOf(fixture))
 
     private fun spectraOf(fixture: AudioFixture): List<FloatArray> {
         val canonical = CanonicalSignal.from(fixture.toPcmBuffer(), fixture.format)
@@ -56,8 +72,9 @@ class BeatStageTest {
     fun `a percussive fixture yields beats near its generated tempo`() {
         // §119's drums fixture is generated at 120 BPM, so the answer is the generator's own
         // parameter rather than a figure read off a run.
-        val onset = stage.onsetSignal(spectraOf(Fixtures.drums(48_000 * 8)))
-        val beats = stage.detect(onset)
+        val fixture = Fixtures.drums(48_000 * 8)
+        val onset = stage.onsetSignal(spectraOf(fixture))
+        val beats = stage.detect(onset, sampleCountOf(fixture))
         assertTrue("no beats found", beats.isNotEmpty())
 
         val tempo = stage.estimateTempo(onset)
@@ -68,7 +85,7 @@ class BeatStageTest {
     fun `silence produces no beats at all`() {
         // Flux is identically zero, so median and MAD are zero, so the threshold is zero, and
         // `flux > threshold` is false everywhere. Nothing to hold a beat up.
-        val beats = stage.detect(stage.onsetSignal(spectraOf(Fixtures.silence(48_000 * 2))))
+        val beats = beatsOf(Fixtures.silence(48_000 * 2))
         assertTrue("silence produced ${beats.size} beats", beats.isEmpty())
     }
 
@@ -86,25 +103,14 @@ class BeatStageTest {
         // nothing, but that what it produces is unmistakably separated from a real beat. Measured:
         // strength 9.81e-05 and confidence 0.011 for the tone, versus 4.16 and 1.000 for drums —
         // a factor of ~42 000 in strength.
-        val tone = stage.detect(stage.onsetSignal(spectraOf(Fixtures.sine440(48_000 * 2, 0.5f))))
-        val drums = stage.detect(stage.onsetSignal(spectraOf(Fixtures.drums(48_000 * 2))))
+        val tone = beatsOf(Fixtures.sine440(48_000 * 2, 0.5f))
+        val drums = beatsOf(Fixtures.drums(48_000 * 2))
         assertTrue("no drum beats to compare against", drums.isNotEmpty())
 
-        // Two regions are excluded, both for stated reasons rather than to make a number fit.
-        //
-        // The opening frames are a genuine attack — the signal does start, and that is a real
-        // onset. The closing frames are §17.5's zero-padded tail: a frame whose window runs past
-        // the end of the signal contains a hard truncation, which smears energy across the
-        // spectrum and reads as a large positive flux. Measured here at 0.653 on frame 197 of
-        // 200, against 9.8e-05 through the sustained portion.
-        //
-        // The tail artefact is a real, user-visible consequence of §17.5's framing meeting
-        // §21.1's flux — a phantom beat at the end of every track — and it is recorded as
-        // obligation T-16 rather than suppressed here, because excluding tail frames from beat
-        // detection is a normative decision §21.1 does not make.
-        val samples = 48_000L * 2
-        val lastFullFrame = (samples - stage.framing.windowSamples) / stage.framing.hopSamples
-        val sustained = tone.filter { it.frameIndex > 10 && it.frameIndex <= lastFullFrame }
+        // Only the opening frames are excluded here, and for a stated reason: the signal does
+        // start, and that is a genuine attack. The zero-padded tail no longer needs excluding by
+        // hand — §21.1 [D-10] makes those frames ineligible, so the detector never sees them.
+        val sustained = tone.filter { it.frameIndex > 10 }
         assertTrue("no sustained candidates to characterise", sustained.isNotEmpty())
 
         val loudestJitter = sustained.maxOf { it.strength }
@@ -122,8 +128,9 @@ class BeatStageTest {
 
     @Test
     fun `every beat lands on a frame the framing can address`() {
-        val spectra = spectraOf(Fixtures.drums(48_000 * 4))
-        val beats = stage.detect(stage.onsetSignal(spectra))
+        val fixture = Fixtures.drums(48_000 * 4)
+        val spectra = spectraOf(fixture)
+        val beats = beatsOf(fixture)
         beats.forEach { beat ->
             assertTrue(beat.frameIndex in 0 until spectra.size.toLong())
             assertEquals(stage.framing.frameStartTime(beat.frameIndex), beat.timestamp)
@@ -133,21 +140,65 @@ class BeatStageTest {
     @Test
     fun `stage 4 is deterministic across runs`() {
         // §9.1, and §21.1's ban on randomisation and wall-clock dependence, end to end.
-        val spectra = spectraOf(Fixtures.drums(48_000 * 4))
-        val first = stage.detect(stage.onsetSignal(spectra))
-        repeat(3) { assertEquals(first, BeatStage().detect(BeatStage().onsetSignal(spectra))) }
+        val fixture = Fixtures.drums(48_000 * 4)
+        val samples = sampleCountOf(fixture)
+        val spectra = spectraOf(fixture)
+        val first = stage.detect(stage.onsetSignal(spectra), samples)
+        repeat(3) {
+            assertEquals(first, BeatStage().detect(BeatStage().onsetSignal(spectra), samples))
+        }
     }
 
     @Test
     fun `disabling beat analysis in the config disables the stage`() {
-        val spectra = spectraOf(Fixtures.drums(48_000 * 4))
         val disabled = BeatStage(config = BeatConfig(enabled = false))
-        assertTrue(disabled.detect(disabled.onsetSignal(spectra)).isEmpty())
+        assertTrue(beatsOf(Fixtures.drums(48_000 * 4), using = disabled).isEmpty())
+    }
+
+    @Test
+    fun `no beat is reported in the zero-padded tail of a real fixture`() {
+        // §21.1 [D-10] end to end, on the fixture that produced the measurement behind the
+        // decision: a sustained sine whose final windows are zero-padded, giving flux 0.653 on
+        // frame 197 of 200 against a 9.8e-05 baseline. The onset signal still contains that
+        // spike — §17.5's padding is deliberately unchanged — but no beat may come from it.
+        val fixture = Fixtures.sine440(48_000 * 2, amplitude = 0.5f)
+        val samples = sampleCountOf(fixture)
+        val onset = stage.onsetSignal(spectraOf(fixture))
+        val lastEligible = BeatDetector.lastEligibleFrame(samples, stage.framing)
+
+        // The artefact is present in the signal, and is the largest value in it.
+        val artefactFrame = onset.indices.maxByOrNull { onset[it] }!!
+        assertTrue(
+            "expected the artefact past frame $lastEligible, found it at $artefactFrame",
+            artefactFrame > lastEligible,
+        )
+
+        // And no beat comes from it, or from anywhere else in the tail.
+        stage.detect(onset, samples).forEach {
+            assertTrue("beat at ${it.frameIndex} is past $lastEligible", it.frameIndex <= lastEligible)
+        }
+    }
+
+    @Test
+    fun `beats in a percussive track are unaffected by the tail rule`() {
+        // Clause 6 at the stage level: suppressing the tail must not cost a real beat. Every beat
+        // found with the true source length must also have been found without the rule.
+        val fixture = Fixtures.drums(48_000 * 4)
+        val samples = sampleCountOf(fixture)
+        val onset = stage.onsetSignal(spectraOf(fixture))
+        val lastEligible = BeatDetector.lastEligibleFrame(samples, stage.framing)
+
+        val guarded = stage.detect(onset, samples).map { it.frameIndex }
+        val unguarded = BeatDetector
+            .detect(onset, (onset.size - 1L) * stage.framing.hopSamples + stage.framing.windowSamples)
+            .map { it.frameIndex }
+
+        assertEquals(unguarded.filter { it <= lastEligible }, guarded)
     }
 
     @Test
     fun `an empty track produces an empty onset signal`() {
         assertEquals(0, stage.onsetSignal(emptyList()).size)
-        assertTrue(stage.detect(FloatArray(0)).isEmpty())
+        assertTrue(stage.detect(FloatArray(0), 0).isEmpty())
     }
 }

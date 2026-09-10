@@ -20,17 +20,23 @@ public data class BeatEvent(
     /** §21.1: `clamp((flux − threshold) / max(threshold, EPSILON), 0, 1)`. */
     public val confidence: Float,
     /**
-     * The raw onset value at the beat — `flux[frameIndex]`, un-normalized.
+     * §21.1 [D-9]: `spectralFlux[frameIndex]` — the raw half-wave-rectified spectral-flux value at
+     * the detected beat frame.
      *
-     * §21.1 names this field but does not give it a formula, so this is a **stated** choice, not
-     * a ratified one: strength is the onset signal itself, which is what [confidence] is the
-     * threshold-relative normalisation *of*. Recoverable — the flux series is stored (§17.4), so
-     * a different definition is a read-time recomputation. Recorded as T-15.
+     * **Not normalized, not clamped, not otherwise transformed.** Unbounded above.
+     *
+     * Deliberately a different quantity from [confidence], and neither substitutes for the other:
+     * this is the raw transient magnitude, [confidence] is the normalized threshold exceedance. A
+     * quiet track and a loud one can both produce `confidence = 1.0`; only strength distinguishes
+     * them, so transforming it would collapse both fields onto the same information.
      */
     public val strength: Float,
 ) {
     init {
         require(frameIndex >= 0) { "frameIndex must not be negative: $frameIndex" }
         require(confidence in 0.0f..1.0f) { "confidence must be within [0,1]: $confidence" }
+        // Deliberately *no* upper bound on strength: §21.1 [D-9] leaves it unbounded, and a
+        // require() capping it here would be exactly the silent transform that decision forbids.
+        require(strength >= 0.0f) { "strength must not be negative: $strength" }
     }
 }
